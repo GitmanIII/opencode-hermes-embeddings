@@ -23,19 +23,28 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 - A running **TEI** server with a CUDA GPU.
 - Bun (opencode-hermes runtime).
 
-## 1. Run TEI (GPU)
+## 1. Run TEI (GPU, Docker)
 
-**Docker (recommended):**
+One-time setup (needs sudo):
 ```bash
-docker run --gpus all -p 8080:80 -v "$HOME/.cache/huggingface:/data" \
+sudo pacman -S nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+sudo usermod -aG docker "$USER"    # then log out/in (or run docker with sudo)
+```
+
+Then run TEI — **bound to loopback only** (`127.0.0.1`, never the LAN):
+```bash
+./scripts/run-tei.sh
+# or manually:
+docker run --rm --gpus all -p 127.0.0.1:8080:80 -v "$HOME/.cache/huggingface:/data" \
   ghcr.io/huggingface/text-embeddings-inference:latest \
   --model-id nomic-ai/nomic-embed-text-v1.5
 ```
 
-**Binary:** download a CUDA build from the [TEI releases](https://github.com/huggingface/text-embeddings-inference/releases), then:
-```bash
-text-embeddings-router --model-id nomic-ai/nomic-embed-text-v1.5 --port 8080
-```
+> `-p 127.0.0.1:8080:80` (not `-p 8080:80`) — the latter publishes on all interfaces.
+
+**Binary (no Docker):** download a CUDA build from the [TEI releases](https://github.com/huggingface/text-embeddings-inference/releases); it links against the CUDA runtime externally, so you must provide matching `libcudart`/`libcublas` (e.g. the `nvidia-*-cu12` pip wheels) and set `LD_LIBRARY_PATH`. This is why Docker + `nvidia-container-toolkit` is recommended.
 
 Verify:
 ```bash

@@ -1,22 +1,27 @@
-# opencode-hermes TEI embeddings server (systemd --user unit).
+# opencode-hermes TEI embeddings server (systemd --user unit) — OPTIONAL.
 #
-# The container must exist once (create it detached):
-#   ./scripts/run-tei.sh --detach
-# Then enable this unit so TEI starts at login and is ready before opencode:
+# The simplest automatic setup is the Docker restart policy instead:
+#   ./scripts/run-tei.sh --detach          # creates container with --restart unless-stopped
+#   sudo systemctl enable docker           # start the daemon at boot
+# Then TEI comes up on every boot. No unit needed.
+#
+# This unit is for starting TEI at login instead of at boot. Caveats:
+#  - The systemd USER manager must already be in the `docker` group. If you were
+#    added to `docker` after the manager started (common with Linger=yes, where
+#    the manager starts at boot and persists across logins), it stays stale and
+#    this unit fails with permission denied / 216. Refresh it with a reboot, or
+#    `sudo systemctl restart user@$(id -u).service` (ends your session).
+#  - It cannot fix that itself: an unprivileged user manager can't add a group
+#    it doesn't hold, so `SupplementaryGroups=docker` fails with 216/GROUP.
+#
+# Install (once the manager has the group):
 #   mkdir -p ~/.config/systemd/user
 #   cp systemd/opencode-hermes-tei.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now opencode-hermes-tei.service
-#
-# To start it without logging in (e.g. always-on workstation):
-#   loginctl enable-linger "$USER"
-#
-# Adjust ExecStart/ExecStop paths if the repo isn't at ~/opencode-hermes-embeddings.
 
 [Unit]
 Description=opencode-hermes TEI embeddings server (Docker)
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=oneshot

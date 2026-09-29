@@ -58,14 +58,15 @@ curl -s localhost:8080/v1/embeddings -H 'content-type: application/json' \
 
 TEI is a service the provider connects to; it should be up whenever opencode runs.
 
-**Detached container (simplest):**
+**Detached container (recommended):**
 ```bash
-./scripts/run-tei.sh --detach     # -d; --restart unless-stopped, named opencode-hermes-tei
+sudo systemctl enable docker      # start the Docker daemon at boot
+./scripts/run-tei.sh --detach     # named container, --restart unless-stopped
 ./scripts/stop-tei.sh             # add --remove to delete the container
 ```
-It comes back automatically whenever the Docker daemon starts.
+TEI then starts with Docker on every boot. (`docker.socket` alone is socket-activated, so the daemon starts on first use — enable `docker.service` for reliable boot start.)
 
-**`systemd --user` unit (starts at login):**
+**`systemd --user` unit (optional, starts at login):**
 ```bash
 ./scripts/run-tei.sh --detach      # create the container once
 mkdir -p ~/.config/systemd/user
@@ -73,7 +74,7 @@ cp systemd/opencode-hermes-tei.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now opencode-hermes-tei.service
 ```
-For an always-on box (start even when you're not logged in): `loginctl enable-linger "$USER"`.
+Caveat: the **user manager must already be in the `docker` group**. If you were added to `docker` after the manager started — common with `Linger=yes`, where the manager starts at boot and persists — it stays stale and the unit fails. Refresh with a reboot, or `sudo systemctl restart user@$(id -u).service`. (An unprivileged user manager can't add the group itself, so `SupplementaryGroups=docker` doesn't help — it fails with `216/GROUP`.) If you just want automatic operation, prefer the restart-policy route above.
 
 ## 2. Install this provider
 

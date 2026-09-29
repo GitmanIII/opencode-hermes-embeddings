@@ -26,6 +26,11 @@ NAME="${TEI_CONTAINER:-opencode-hermes-tei}"
 
 mkdir -p "$CACHE"
 
+if ! docker info >/dev/null 2>&1; then
+  echo "ERROR: cannot access Docker (are you in the 'docker' group? open a new login shell, or run with sudo)." >&2
+  exit 1
+fi
+
 # Host port is bound to loopback only; 0.0.0.0:80 is the container-internal bind.
 COMMON=(--gpus all -p "127.0.0.1:${PORT}:80" -v "${CACHE}:/data" --name "$NAME"
         "$IMAGE" --model-id "$MODEL" --hostname 0.0.0.0)

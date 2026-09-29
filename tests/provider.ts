@@ -58,6 +58,17 @@ assert("without recency the higher-cosine note wins", byScore[0].id === "old", J
 assert("with recency the newer note wins", byRank[0].id === "new", JSON.stringify(byRank.map((h) => h.id)));
 rstore.close();
 
+// Search streams row-by-row (no per-row Array.from): a planted nearest note wins at volume.
+const scale = new VectorStore(path.join(TMP, "scale.sqlite"));
+const SDIM = 32;
+const tvec = new Array(SDIM).fill(0);
+tvec[0] = 1;
+for (let i = 0; i < 20_000; i++) scale.add(`s${i}`, `note ${i}`, Array.from({ length: SDIM }, () => Math.random()), "global");
+scale.add("target", "planted target note", tvec, "global", Date.now() + 1000);
+const top = scale.search(tvec, ["global"], 1, -1)[0];
+assert("search streams at 20k notes and finds the nearest", top?.id === "target", JSON.stringify(top && { id: top.id, score: top.score }));
+scale.close();
+
 const provider = new EmbeddingsMemoryProvider({ minScore: 0.01, topK: 5 }, new FakeEmbedder());
 await provider.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projA" });
 assert("provider name", provider.name === "embeddings");

@@ -16,7 +16,7 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 - `search` / `forget` → the `provider_memory` tool.
 - **Scoped**: notes are tagged `global` or `project:<id>`; a query only sees `global` + the **current** project — no cross-project bleed.
 - `reconcile(canonical)` — the **dream** invoked on idle by opencode-hermes: notes made obsolete by a current canonical fact are **superseded** (tombstoned, excluded from recall); near-duplicates (`cosine ≥ duplicateThreshold`) are collapsed, and an optional `judge` resolves an ambiguous band. `hardDelete` GCs the tombstones.
-- Vectors live in SQLite (BLOBs) with **brute-force cosine** — no native extension, sub-ms at personal scale.
+- Vectors live in SQLite (BLOBs) with **brute-force cosine** and no native extension. Search **streams row-by-row with zero-copy float32 views** (no per-row allocation): measured ~3 µs/note (100k notes ≈ 0.34 s) at a flat ~60 MB RSS — ~4.5× faster and no memory blow-up vs the earlier materialize-then-map path.
 
 ## Requirements
 
@@ -192,7 +192,7 @@ provider_memory search "when do we copy data off-site?"
 bun run test
 ```
 
-29 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, add/search, prefetch block, project isolation, global mirroring + dedupe, replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC), forget.
+30 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, add/search, prefetch block, project isolation, global mirroring + dedupe, replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC), volume search, forget.
 
 ## License
 

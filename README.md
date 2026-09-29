@@ -110,6 +110,21 @@ Restart opencode. The log (`opencode-hermes.log`) should show `provider=embeddin
 | `minScore` | `0` | minimum cosine to inject |
 | `dbPath` | `<memoryRoot>/embeddings.sqlite` | vector store path |
 
+## Verified (RTX 3090)
+
+End-to-end, with opencode-hermes wired to this provider and TEI running on the GPU:
+
+- **Explicit semantic search** — `provider_memory search "colour preference"` returned *"My favourite test colour is aubergine-42"* at **score 0.76**.
+- **Cross-session semantic recall** — in a *new* session, asking *"when do we copy data off-site?"* surfaced *"The nightly backup archives snapshots to cold storage at 03:00."* (no keyword overlap).
+- **Latency** — TEI `openai_embed` on GPU: **~1.2 ms** for a short note, **~4–18 ms** for longer prompts; 768-dim vectors; **~0.6 GB VRAM**.
+- **Scoping** — a note added in a project is visible only in that project (+ `global`); verified by the isolation tests.
+
+Try it:
+```
+provider_memory add "The nightly backup archives snapshots to cold storage at 03:00."
+provider_memory search "when do we copy data off-site?"
+```
+
 ## Testing
 
 ```bash

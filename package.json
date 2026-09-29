@@ -1,0 +1,22 @@
+{
+  "name": "opencode-hermes-embeddings",
+  "version": "0.1.0",
+  "description": "Embeddings-backed long-term memory provider for opencode-hermes: semantic recall on the GPU via HuggingFace text-embeddings-inference (TEI).",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./provider": "./src/provider.ts"
+  },
+  "keywords": ["opencode-plugin", "opencode-hermes", "embeddings", "memory", "semantic-search", "text-embeddings-inference", "tei"],
+  "license": "MIT",
+  "engines": { "bun": ">=1.0.0" },
+  "scripts": {
+    "test": "bun run tests/provider.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.5.0"
+  }
+}

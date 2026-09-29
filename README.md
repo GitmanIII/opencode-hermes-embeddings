@@ -76,6 +76,26 @@ systemctl --user enable --now opencode-hermes-tei.service
 ```
 Caveat: the **user manager must already be in the `docker` group**. If you were added to `docker` after the manager started — common with `Linger=yes`, where the manager starts at boot and persists — it stays stale and the unit fails. Refresh with a reboot, or `sudo systemctl restart user@$(id -u).service`. (An unprivileged user manager can't add the group itself, so `SupplementaryGroups=docker` doesn't help — it fails with `216/GROUP`.) If you just want automatic operation, prefer the restart-policy route above.
 
+## Alternative embedder: local venv (no Docker)
+
+TEI+Docker is the fastest, but needs the NVIDIA container toolkit. If you'd rather stay Docker-free, the repo ships an equivalent OpenAI-compatible server running `sentence-transformers` on CUDA in a self-contained `uv` venv:
+
+```bash
+./scripts/setup-venv.sh          # once: creates .venv (torch cu + sentence-transformers)
+./scripts/run-venv.sh            # foreground (127.0.0.1:8080)
+./scripts/run-venv.sh --detach   # background
+./scripts/stop-venv.sh
+```
+The provider is unchanged — just point `providerOptions.endpoint` at it. (No prefixes here either; the provider adds them.)
+
+Trade-offs vs TEI: same model/endpoint, but Python's `import torch` makes **startup slower** and there's no container. Run both on different ports and compare latency:
+
+```bash
+./scripts/run-tei.sh --detach                    # TEI on :8080
+EMBED_PORT=8081 ./scripts/run-venv.sh --detach   # venv on :8081
+python scripts/bench.py http://127.0.0.1:8080 http://127.0.0.1:8081
+```
+
 ## 2. Install this provider
 
 ```bash

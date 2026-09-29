@@ -1,3 +1,6 @@
 node_modules/
 bun.lock
 *.sqlite
+.venv/
+.venv-server.log
+.venv-server.pid

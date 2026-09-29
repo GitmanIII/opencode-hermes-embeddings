@@ -32,6 +32,10 @@ export type EmbeddingsOptions = {
   topK?: number;
   minScore?: number;
   dbPath?: string;
+  /** Blend cosine with a recency term (0 = pure cosine, the default). */
+  recencyWeight?: number;
+  /** Recency half-life in days (default 30). */
+  recencyHalfLifeDays?: number;
 };
 
 export type ProviderHit = { id: string; text: string; score: number };
@@ -46,6 +50,8 @@ export class EmbeddingsMemoryProvider {
   private embedder!: Embedder;
   private topK = 5;
   private minScore = 0;
+  private recencyWeight = 0;
+  private recencyHalfLifeDays = 30;
   private projectId: string | null = null;
 
   /** `embedder` is injectable for tests. */
@@ -67,6 +73,8 @@ export class EmbeddingsMemoryProvider {
     }
     this.topK = o.topK ?? ctx.prefetchLimit ?? 5;
     this.minScore = o.minScore ?? 0;
+    this.recencyWeight = o.recencyWeight ?? 0;
+    this.recencyHalfLifeDays = o.recencyHalfLifeDays ?? 30;
     this.projectId = ctx.projectId ?? null;
     const dbPath = o.dbPath ?? path.join(ctx.memoryRoot, "embeddings.sqlite");
     this.store = new VectorStore(dbPath);
@@ -105,7 +113,10 @@ export class EmbeddingsMemoryProvider {
   async search(query: string, limit?: number): Promise<ProviderHit[]> {
     if (!query.trim()) return [];
     const [qv] = await this.embedder.embed([query], "query");
-    const hits = this.store.search(qv, this.queryScopes(), limit ?? this.topK, this.minScore);
+    const rank = this.recencyWeight > 0
+      ? { recencyWeight: this.recencyWeight, halfLifeMs: this.recencyHalfLifeDays * 86_400_000 }
+      : undefined;
+    const hits = this.store.search(qv, this.queryScopes(), limit ?? this.topK, this.minScore, rank);
     // Dedupe by text (same note mirrored into multiple scopes) keeping best score.
     const seen = new Set<string>();
     const out: ProviderHit[] = [];
@@ -130,9 +141,22 @@ export class EmbeddingsMemoryProvider {
     return true;
   }
 
-  /** Mirror built-in memory writes (which are global) into the semantic store. */
-  async onMemoryWrite(action: "add" | "replace" | "remove", content: string): Promise<void> {
-    if (action === "remove") return;
+  /**
+   * Mirror built-in memory writes (which are global) into the semantic store.
+   * `remove`/`replace` propagate the deletion so wrong or superseded facts stop
+   * being recalled; `demote` keeps the fact (the append-only path).
+   */
+  async onMemoryWrite(action: "add" | "replace" | "remove" | "demote", content: string, oldText?: string): Promise<void> {
+    if (action === "demote") return;
+    if (action === "remove") {
+      const t = content.trim();
+      if (t) this.store.deleteByText(t, GLOBAL_SCOPE);
+      return;
+    }
+    if (action === "replace") {
+      const o = (oldText ?? "").trim();
+      if (o) this.store.deleteByText(o, GLOBAL_SCOPE);
+    }
     const text = content.trim();
     if (!text) return;
     if (this.store.findByText(text, GLOBAL_SCOPE)) return;

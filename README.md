@@ -11,7 +11,7 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 
 ## How it works
 
-- `add` / `onMemoryWrite` → embed the note (`document` side) and store the vector.
+- `add` / `onMemoryWrite` → embed the note (`document` side) and store the vector. Built-in writes are mirrored: `replace` deletes the superseded text and stores the new one, `remove` propagates the deletion, and `demote` keeps the fact (append-only).
 - `prefetch(query)` → embed the user message (`query` side), cosine-search the store, inject the top matches as a `<provider-memory>` block.
 - `search` / `forget` → the `provider_memory` tool.
 - **Scoped**: notes are tagged `global` or `project:<id>`; a query only sees `global` + the **current** project — no cross-project bleed.
@@ -163,6 +163,8 @@ Restart opencode. The log (`opencode-hermes.log`) should show `provider=embeddin
 | `docPrefix` / `queryPrefix` | nomic | override prefixes |
 | `topK` | `5` | notes injected per turn / max search results |
 | `minScore` | `0` | minimum cosine to inject |
+| `recencyWeight` | `0` | blend cosine with a recency term (0 = pure cosine) |
+| `recencyHalfLifeDays` | `30` | recency half-life, in days |
 | `dbPath` | `<memoryRoot>/embeddings.sqlite` | vector store path |
 
 ## Verified (RTX 3090)
@@ -186,7 +188,7 @@ provider_memory search "when do we copy data off-site?"
 bun run test
 ```
 
-13 hermetic checks using an injectable fake embedder (no TEI needed): cosine, add/search ranking, prefetch block, project isolation, global mirroring + dedupe, forget.
+20 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, add/search, prefetch block, project isolation, global mirroring + dedupe, replace/remove/demote propagation, forget.
 
 ## License
 

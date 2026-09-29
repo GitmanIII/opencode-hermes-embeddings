@@ -8,6 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { cosine, type Embedder, type EmbedKind } from "../src/embedder.ts";
 import { EmbeddingsMemoryProvider } from "../src/provider.ts";
+import { VectorStore } from "../src/store.ts";
 
 let passed = 0;
 let failed = 0;
@@ -47,6 +48,16 @@ const TMP = await fs.mkdtemp(path.join(os.tmpdir(), "ohe-emb-"));
 assert("cosine of identical vectors is 1", Math.abs(cosine([1, 2, 3], [1, 2, 3]) - 1) < 1e-9);
 assert("cosine of orthogonal vectors is 0", Math.abs(cosine([1, 0], [0, 1])) < 1e-9);
 
+// recency ranking: a slightly-less-relevant but newer note can outrank an older one
+const rstore = new VectorStore(path.join(TMP, "recency.sqlite"));
+rstore.add("old", "old note", [1, 0.01], "global", Date.now() - 10 * 86_400_000);
+rstore.add("new", "new note", [0.9, 0.1], "global", Date.now());
+const byScore = rstore.search([1, 0], ["global"], 5, 0);
+const byRank = rstore.search([1, 0], ["global"], 5, 0, { recencyWeight: 0.05, halfLifeMs: 86_400_000 });
+assert("without recency the higher-cosine note wins", byScore[0].id === "old", JSON.stringify(byScore.map((h) => h.id)));
+assert("with recency the newer note wins", byRank[0].id === "new", JSON.stringify(byRank.map((h) => h.id)));
+rstore.close();
+
 const provider = new EmbeddingsMemoryProvider({ minScore: 0.01, topK: 5 }, new FakeEmbedder());
 await provider.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projA" });
 assert("provider name", provider.name === "embeddings");
@@ -65,7 +76,7 @@ assert("add is idempotent for same text+scope", a2.id === a.id && (await provide
 await provider.add("shared duplicate across scopes marker");
 await provider.onMemoryWrite("add", "shared duplicate across scopes marker"); // global copy
 const dup = await provider.search("shared duplicate across scopes marker", 20);
-assert("search dedupes identical text across scopes", dup.filter((h) => h.text === "shared duplicate across scopes marker").length === 1, JSON.stringify(dup.map((h) => h.scope)));
+assert("search dedupes identical text across scopes", dup.filter((h) => h.text === "shared duplicate across scopes marker").length === 1, JSON.stringify(dup.map((h) => h.text)));
 
 const pf = await provider.prefetch("alpha beta detector");
 assert("prefetch returns a provider-memory block with the note", pf.hits >= 1 && pf.text.includes("<provider-memory") && pf.text.includes("Alpha beta gamma"));
@@ -81,16 +92,23 @@ await provider.onMemoryWrite("add", "global shared fact about caches");
 const g = await provider.search("global shared fact caches", 5);
 assert("global mirrored note visible in project B", g.some((h) => h.text.includes("global shared fact")));
 
-// mirror dedupe + remove ignored
+// mirror dedupe + replace/remove propagation + demote keeps
 await provider.onMemoryWrite("add", "global shared fact about caches");
 assert("mirror dedupes identical global text", (await provider.search("global shared fact caches", 20)).filter((h) => h.text === "global shared fact about caches").length === 1);
+await provider.onMemoryWrite("add", "global fact that will be replaced");
+await provider.onMemoryWrite("replace", "global fact about cache invalidation", "global fact that will be replaced");
+assert("mirror replace deletes the old global text", !(await provider.search("global fact that will be replaced", 20)).some((h) => h.text === "global fact that will be replaced"));
+assert("mirror replace adds the new global text", (await provider.search("global fact cache invalidation", 20)).some((h) => h.text === "global fact about cache invalidation"));
+await provider.onMemoryWrite("add", "global fact that will be demoted");
+await provider.onMemoryWrite("demote", "global fact that will be demoted");
+assert("mirror demote keeps the global text", (await provider.search("global fact demoted", 20)).some((h) => h.text === "global fact that will be demoted"));
 await provider.onMemoryWrite("remove", "global shared fact about caches");
-assert("mirror ignores removes", (await provider.search("global shared fact caches", 20)).some((h) => h.text.includes("global shared fact")));
+assert("mirror remove deletes the global text", !(await provider.search("global shared fact caches", 20)).some((h) => h.text.includes("global shared fact")));
 
 // forget
-const target = g[0].id;
+const target = (await provider.search("global fact demoted", 20)).find((h) => h.text === "global fact that will be demoted")!.id;
 provider.forget(target);
-assert("forget removes the note", !(await provider.search("global shared fact caches", 20)).some((h) => h.id === target));
+assert("forget removes the note", !(await provider.search("global fact demoted", 20)).some((h) => h.id === target));
 
 // scopes isolated at the file level: store path exists
 assert("store file created", await fs.access(path.join(TMP, "embeddings.sqlite")).then(() => true).catch(() => false));

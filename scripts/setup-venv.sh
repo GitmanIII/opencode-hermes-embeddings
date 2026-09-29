@@ -6,8 +6,11 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 VENV="$HERE/.venv"
 
 uv venv "$VENV" --python 3.12
+# Pin Transformers <5: nomic-embed-text-v1.5's remote modeling code calls
+# get_extended_attention_mask(), which Transformers 5 removed (TEI uses its own
+# Rust impl, so it is unaffected).
 uv pip install --python "$VENV/bin/python" \
-  torch sentence-transformers fastapi "uvicorn[standard]" einops
+  torch "sentence-transformers==3.4.1" "transformers==4.49.0" fastapi "uvicorn[standard]" einops
 
 echo
 echo "venv ready: $VENV"

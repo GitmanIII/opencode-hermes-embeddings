@@ -96,6 +96,15 @@ EMBED_PORT=8081 ./scripts/run-venv.sh --detach   # venv on :8081
 python scripts/bench.py http://127.0.0.1:8080 http://127.0.0.1:8081
 ```
 
+Measured on an RTX 3090 (nomic-embed-text-v1.5, single short note):
+
+| backend | cold start | p50 | p95 | VRAM |
+|---|---|---|---|---|
+| **TEI** (Docker) | ~5–8 s | **1.73 ms** | 1.79 ms | **562 MiB** |
+| **venv** (sentence-transformers) | ~6–8 s | 6.12 ms | 6.88 ms | 902 MiB |
+
+Both are imperceptible for this workload (a few embeds per turn). TEI wins on latency/VRAM; the venv wins on setup (no Docker). Note the venv route pins `transformers<5` (nomic's remote code predates Transformers 5).
+
 ## 2. Install this provider
 
 ```bash

@@ -101,9 +101,10 @@ Measured on an RTX 3090 (nomic-embed-text-v1.5, single short note):
 | backend | cold start | p50 | p95 | VRAM |
 |---|---|---|---|---|
 | **TEI** (Docker) | ~5–8 s | **1.73 ms** | 1.79 ms | **562 MiB** |
+| **Ollama** (GGUF) | warm | 5.39 ms | 6.35 ms | 620 MiB |
 | **venv** (sentence-transformers) | ~6–8 s | 6.12 ms | 6.88 ms | 902 MiB |
 
-Both are imperceptible for this workload (a few embeds per turn). TEI wins on latency/VRAM; the venv wins on setup (no Docker). Note the venv route pins `transformers<5` (nomic's remote code predates Transformers 5).
+All are imperceptible for this workload (a few embeds per turn). TEI wins on latency/VRAM; no-Docker routes (Ollama, venv) trade a little speed. Note the venv route pins `transformers<5` (nomic's remote code predates Transformers 5).
 
 ## Other backends (Ollama, llama.cpp)
 
@@ -126,7 +127,9 @@ llama-server --embedding -m nomic-embed-text-v1.5.Q8_0.gguf --host 127.0.0.1 --p
 "providerOptions": { "endpoint": "http://127.0.0.1:8080/v1", "model": "nomic-embed-text-v1.5", "prefixes": true }
 ```
 
-Ollama and llama.cpp **share the same engine**, so they perform nearly identically — that's why neither gets its own script. Note: vectors are close but not identical across engines/quantizations, so **use one backend per store** (or re-embed when switching).
+Ollama and llama.cpp **share the same engine**, so they perform nearly identically — that's why neither gets its own script. Measured (RTX 3090, nomic-embed-text): **Ollama p50 5.39 ms / p95 6.35 ms, 620 MiB VRAM, 100 % GPU**; expect llama.cpp to be similar.
+
+Note: vectors are close but not identical across engines/quantizations, so **use one backend per store** (or re-embed when switching).
 
 ## 2. Install this provider
 

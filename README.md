@@ -19,7 +19,7 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 
 ## Requirements
 
-- [opencode-hermes](https://github.com/GitmanIII/opencode-hermes) **>= v1.0.2** (external provider loading + `providerOptions`/`projectId`).
+- [opencode-hermes](https://github.com/GitmanIII/opencode-hermes) **>= v0.5.0** (external provider loading + `providerOptions`/`projectId`).
 - A running **TEI** server with a CUDA GPU.
 - Bun (opencode-hermes runtime).
 

@@ -12,7 +12,7 @@
  */
 import * as path from "node:path";
 import { TeiEmbedder, type EmbedKind, type Embedder } from "./embedder.ts";
-import { VectorStore, type ScoredNote } from "./store.ts";
+import { VectorStore, type ScoredNote, type SearchOptions } from "./store.ts";
 
 export type ProviderContext = {
   memoryRoot: string;
@@ -36,7 +36,23 @@ export type EmbeddingsOptions = {
   recencyWeight?: number;
   /** Recency half-life in days (default 30). */
   recencyHalfLifeDays?: number;
+  /** Additive score boost for notes mirroring a current canonical fact. */
+  canonicalWeight?: number;
+  /** Cosine at/above which a note is a duplicate (dream reconcile; default 0.92). */
+  duplicateThreshold?: number;
+  /** Cosine at/above which the dream judge is consulted (default 0.8). */
+  ambiguousThreshold?: number;
 };
+
+/** Dream reconciliation options (structurally matches opencode-hermes). */
+export type ReconcileOptions = {
+  judge?: (canonicalText: string, noteText: string) => Promise<boolean>;
+  duplicateThreshold?: number;
+  ambiguousThreshold?: number;
+  hardDelete?: boolean;
+  now?: number;
+};
+export type ReconcileStats = { canonical: number; added: number; superseded: number; judged: number; removed: number };
 
 export type ProviderHit = { id: string; text: string; score: number };
 
@@ -52,6 +68,9 @@ export class EmbeddingsMemoryProvider {
   private minScore = 0;
   private recencyWeight = 0;
   private recencyHalfLifeDays = 30;
+  private canonicalWeight = 0;
+  private duplicateThreshold = 0.92;
+  private ambiguousThreshold = 0.8;
   private projectId: string | null = null;
 
   /** `embedder` is injectable for tests. */
@@ -75,6 +94,9 @@ export class EmbeddingsMemoryProvider {
     this.minScore = o.minScore ?? 0;
     this.recencyWeight = o.recencyWeight ?? 0;
     this.recencyHalfLifeDays = o.recencyHalfLifeDays ?? 30;
+    this.canonicalWeight = o.canonicalWeight ?? 0;
+    this.duplicateThreshold = o.duplicateThreshold ?? 0.92;
+    this.ambiguousThreshold = o.ambiguousThreshold ?? 0.8;
     this.projectId = ctx.projectId ?? null;
     const dbPath = o.dbPath ?? path.join(ctx.memoryRoot, "embeddings.sqlite");
     this.store = new VectorStore(dbPath);
@@ -83,6 +105,10 @@ export class EmbeddingsMemoryProvider {
   /** opencode-hermes calls this per session so recall is project-scoped. */
   setProject(projectId: string | null): void {
     this.projectId = projectId ?? null;
+  }
+
+  private newId(): string {
+    return `em_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
   private projectScope(): string {
@@ -105,7 +131,7 @@ export class EmbeddingsMemoryProvider {
     const existing = this.store.findByText(text, scope);
     if (existing) return { id: existing }; // idempotent
     const [vector] = await this.embedder.embed([text], "document");
-    const id = `em_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = this.newId();
     this.store.add(id, text, vector, scope);
     return { id };
   }
@@ -113,10 +139,13 @@ export class EmbeddingsMemoryProvider {
   async search(query: string, limit?: number): Promise<ProviderHit[]> {
     if (!query.trim()) return [];
     const [qv] = await this.embedder.embed([query], "query");
-    const rank = this.recencyWeight > 0
-      ? { recencyWeight: this.recencyWeight, halfLifeMs: this.recencyHalfLifeDays * 86_400_000 }
-      : undefined;
-    const hits = this.store.search(qv, this.queryScopes(), limit ?? this.topK, this.minScore, rank);
+    const opts: SearchOptions = {};
+    if (this.recencyWeight > 0) {
+      opts.recencyWeight = this.recencyWeight;
+      opts.halfLifeMs = this.recencyHalfLifeDays * 86_400_000;
+    }
+    if (this.canonicalWeight > 0) opts.canonicalBoost = this.canonicalWeight;
+    const hits = this.store.search(qv, this.queryScopes(), limit ?? this.topK, this.minScore, Object.keys(opts).length ? opts : undefined);
     // Dedupe by text (same note mirrored into multiple scopes) keeping best score.
     const seen = new Set<string>();
     const out: ProviderHit[] = [];
@@ -161,7 +190,57 @@ export class EmbeddingsMemoryProvider {
     if (!text) return;
     if (this.store.findByText(text, GLOBAL_SCOPE)) return;
     const [vector] = await this.embedder.embed([text], "document");
-    this.store.add(`em_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, text, vector, GLOBAL_SCOPE);
+    this.store.add(this.newId(), text, vector, GLOBAL_SCOPE);
+  }
+
+  /**
+   * "Dream": reconcile the semantic store against the current canonical facts.
+   * Bounded (one embed + a store scan per canonical entry). Near-duplicate notes
+   * (cosine >= duplicateThreshold) are superseded (soft-deleted) by the canonical
+   * note; an ambiguous band can be resolved by the optional `judge`. With
+   * `hardDelete`, tombstones are physically removed afterwards (GC).
+   */
+  async reconcile(canonical: string[], opts: ReconcileOptions = {}): Promise<ReconcileStats> {
+    const scope = GLOBAL_SCOPE;
+    const dup = opts.duplicateThreshold ?? this.duplicateThreshold;
+    const amb = opts.ambiguousThreshold ?? this.ambiguousThreshold;
+    const now = opts.now ?? Date.now();
+    const stats: ReconcileStats = { canonical: 0, added: 0, superseded: 0, judged: 0, removed: 0 };
+
+    this.store.clearCanonical(scope);
+
+    for (const raw of canonical) {
+      const text = raw.trim();
+      if (!text) continue;
+      let id = this.store.findByText(text, scope);
+      if (id) {
+        this.store.clearSuperseded(id);
+        this.store.setCanonical(id, true);
+        stats.canonical++;
+        continue;
+      }
+      const [vector] = await this.embedder.embed([text], "document");
+      let superseded = this.store.search(vector, [scope], 10, dup).filter((h) => !h.canonical);
+      if (!superseded.length && opts.judge) {
+        const top = this.store.search(vector, [scope], 1, amb).find((h) => !h.canonical);
+        if (top) {
+          stats.judged++;
+          if (await opts.judge(text, top.text)) superseded = [top];
+        }
+      }
+      id = this.newId();
+      this.store.add(id, text, vector, scope, now);
+      this.store.setCanonical(id, true);
+      stats.added++;
+      for (const h of superseded) {
+        this.store.supersede(h.id, id);
+        stats.superseded++;
+      }
+      stats.canonical++;
+    }
+
+    if (opts.hardDelete) stats.removed = this.store.deleteSuperseded(scope);
+    return stats;
   }
 
   shutdown(): void {

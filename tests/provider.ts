@@ -113,6 +113,55 @@ assert("forget removes the note", !(await provider.search("global fact demoted",
 // scopes isolated at the file level: store path exists
 assert("store file created", await fs.access(path.join(TMP, "embeddings.sqlite")).then(() => true).catch(() => false));
 
+// ── Dream: reconcile the store against canonical facts ──
+// Each provider gets its own store file so these cases don't interfere.
+let dreamN = 0;
+const mkProvider = async (opts: Record<string, unknown> = {}) => {
+  const p = new EmbeddingsMemoryProvider(
+    { minScore: 0.01, topK: 5, dbPath: path.join(TMP, `dream-${++dreamN}.sqlite`), ...opts },
+    new FakeEmbedder(),
+  );
+  await p.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projDream" });
+  return p;
+};
+
+// deterministic near-duplicate collapse
+const pd = await mkProvider({ duplicateThreshold: 0.6, ambiguousThreshold: 0.5 });
+await pd.onMemoryWrite("add", "detector alpha beta gamma");
+await pd.onMemoryWrite("add", "unrelated postgres backup procedure");
+const dStats = await pd.reconcile(["detector alpha beta delta"]);
+assert("dream supersedes a near-duplicate note", dStats.superseded === 1 && dStats.added === 1 && dStats.canonical === 1, JSON.stringify(dStats));
+const afterCanon = await pd.search("detector alpha beta", 10);
+assert("dream hides the superseded note", !afterCanon.some((h) => h.text === "detector alpha beta gamma"), JSON.stringify(afterCanon.map((h) => h.text)));
+assert("dream keeps the canonical note", afterCanon.some((h) => h.text === "detector alpha beta delta"));
+assert("dream leaves distinct notes alone", (await pd.search("unrelated postgres backup", 5)).some((h) => h.text === "unrelated postgres backup procedure"));
+pd.shutdown();
+
+// the judge resolves the ambiguous band
+const pj = await mkProvider({ duplicateThreshold: 0.99, ambiguousThreshold: 0.5 });
+await pj.onMemoryWrite("add", "detector alpha beta gamma");
+let judgeCalls = 0;
+const jStats = await pj.reconcile(["detector alpha beta delta"], { judge: async () => { judgeCalls++; return true; } });
+assert("dream consults the judge in the ambiguous band", judgeCalls === 1 && jStats.judged === 1, JSON.stringify(jStats));
+assert("dream applies the judge's verdict", jStats.superseded === 1 && !(await pj.search("detector alpha beta gamma", 10)).some((h) => h.text === "detector alpha beta gamma"));
+pj.shutdown();
+
+// the judge can keep a distinct fact
+const pk = await mkProvider({ duplicateThreshold: 0.99, ambiguousThreshold: 0.5 });
+await pk.onMemoryWrite("add", "detector alpha beta gamma");
+const kStats = await pk.reconcile(["detector alpha beta delta"], { judge: async () => false });
+assert("dream keeps a note the judge says is distinct", kStats.superseded === 0 && (await pk.search("detector alpha beta gamma", 10)).some((h) => h.text === "detector alpha beta gamma"));
+pk.shutdown();
+
+// exact canonical is not duplicated; hardDelete GCs tombstones
+const pg = await mkProvider({ duplicateThreshold: 0.6 });
+await pg.onMemoryWrite("add", "detector alpha beta gamma");
+await pg.reconcile(["detector alpha beta delta"]); // supersedes the near-duplicate
+const gStats = await pg.reconcile(["detector alpha beta delta"], { hardDelete: true });
+assert("dream does not duplicate an exact canonical fact", gStats.added === 0 && gStats.canonical === 1, JSON.stringify(gStats));
+assert("dream GC removes tombstones", gStats.removed >= 1, JSON.stringify(gStats));
+pg.shutdown();
+
 provider.shutdown();
 await fs.rm(TMP, { recursive: true, force: true });
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -15,11 +15,12 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 - `prefetch(query)` → embed the user message (`query` side), cosine-search the store, inject the top matches as a `<provider-memory>` block.
 - `search` / `forget` → the `provider_memory` tool.
 - **Scoped**: notes are tagged `global` or `project:<id>`; a query only sees `global` + the **current** project — no cross-project bleed.
+- `reconcile(canonical)` — the **dream** invoked on idle by opencode-hermes: notes made obsolete by a current canonical fact are **superseded** (tombstoned, excluded from recall); near-duplicates (`cosine ≥ duplicateThreshold`) are collapsed, and an optional `judge` resolves an ambiguous band. `hardDelete` GCs the tombstones.
 - Vectors live in SQLite (BLOBs) with **brute-force cosine** — no native extension, sub-ms at personal scale.
 
 ## Requirements
 
-- [opencode-hermes](https://github.com/GitmanIII/opencode-hermes) **>= v0.5.0** (external provider loading + `providerOptions`/`projectId`).
+- [opencode-hermes](https://github.com/GitmanIII/opencode-hermes) **>= v0.5.0** (external provider loading + `providerOptions`/`projectId`); the **dream** (`reconcile`) needs **>= v0.7.0**.
 - A running **TEI** server with a CUDA GPU.
 - Bun (opencode-hermes runtime).
 
@@ -165,6 +166,9 @@ Restart opencode. The log (`opencode-hermes.log`) should show `provider=embeddin
 | `minScore` | `0` | minimum cosine to inject |
 | `recencyWeight` | `0` | blend cosine with a recency term (0 = pure cosine) |
 | `recencyHalfLifeDays` | `30` | recency half-life, in days |
+| `canonicalWeight` | `0` | additive score boost for canonical notes |
+| `duplicateThreshold` | `0.92` | dream: cosine ≥ this collapses a near-duplicate |
+| `ambiguousThreshold` | `0.8` | dream: cosine ≥ this consults the judge |
 | `dbPath` | `<memoryRoot>/embeddings.sqlite` | vector store path |
 
 ## Verified (RTX 3090)
@@ -188,7 +192,7 @@ provider_memory search "when do we copy data off-site?"
 bun run test
 ```
 
-20 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, add/search, prefetch block, project isolation, global mirroring + dedupe, replace/remove/demote propagation, forget.
+29 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, add/search, prefetch block, project isolation, global mirroring + dedupe, replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC), forget.
 
 ## License
 

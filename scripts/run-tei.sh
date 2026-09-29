@@ -25,4 +25,5 @@ exec docker run --rm --name "$NAME" --gpus all \
   -p "127.0.0.1:${PORT}:80" \
   -v "${CACHE}:/data" \
   "${IMAGE}" \
-  --model-id "${MODEL}"
+  --model-id "${MODEL}" \
+  --hostname 0.0.0.0

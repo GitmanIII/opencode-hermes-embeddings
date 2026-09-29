@@ -59,6 +59,14 @@ const hits = await provider.search("alpha beta detector", 5);
 assert("add returns an id", a.id.startsWith("em_"));
 assert("search ranks the relevant note first", hits.length >= 1 && hits[0].text.includes("Alpha beta gamma"), JSON.stringify(hits.map((h) => h.score.toFixed(2))));
 
+// idempotent add + cross-scope dedupe
+const a2 = await provider.add("Alpha beta gamma detector notes");
+assert("add is idempotent for same text+scope", a2.id === a.id && (await provider.search("alpha beta detector", 20)).filter((h) => h.text.includes("Alpha beta gamma")).length === 1, JSON.stringify(a2));
+await provider.add("shared duplicate across scopes marker");
+await provider.onMemoryWrite("add", "shared duplicate across scopes marker"); // global copy
+const dup = await provider.search("shared duplicate across scopes marker", 20);
+assert("search dedupes identical text across scopes", dup.filter((h) => h.text === "shared duplicate across scopes marker").length === 1, JSON.stringify(dup.map((h) => h.scope)));
+
 const pf = await provider.prefetch("alpha beta detector");
 assert("prefetch returns a provider-memory block with the note", pf.hits >= 1 && pf.text.includes("<provider-memory") && pf.text.includes("Alpha beta gamma"));
 

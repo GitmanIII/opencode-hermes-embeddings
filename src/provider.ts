@@ -93,8 +93,10 @@ export class EmbeddingsMemoryProvider {
   async add(content: string, tags?: string[]): Promise<{ id: string }> {
     const text = content.trim();
     if (!text) throw new Error("add requires content");
-    const [vector] = await this.embedder.embed([text], "document");
     const scope = tags?.includes("global") ? GLOBAL_SCOPE : this.projectScope();
+    const existing = this.store.findByText(text, scope);
+    if (existing) return { id: existing }; // idempotent
+    const [vector] = await this.embedder.embed([text], "document");
     const id = `em_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.store.add(id, text, vector, scope);
     return { id };
@@ -103,7 +105,17 @@ export class EmbeddingsMemoryProvider {
   async search(query: string, limit?: number): Promise<ProviderHit[]> {
     if (!query.trim()) return [];
     const [qv] = await this.embedder.embed([query], "query");
-    return this.store.search(qv, this.queryScopes(), limit ?? this.topK, this.minScore);
+    const hits = this.store.search(qv, this.queryScopes(), limit ?? this.topK, this.minScore);
+    // Dedupe by text (same note mirrored into multiple scopes) keeping best score.
+    const seen = new Set<string>();
+    const out: ProviderHit[] = [];
+    for (const h of hits) {
+      const key = h.text.trim().toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(h);
+    }
+    return out;
   }
 
   async prefetch(query: string): Promise<{ text: string; hits: number }> {
@@ -123,7 +135,7 @@ export class EmbeddingsMemoryProvider {
     if (action === "remove") return;
     const text = content.trim();
     if (!text) return;
-    if (this.store.hasText(text, GLOBAL_SCOPE)) return;
+    if (this.store.findByText(text, GLOBAL_SCOPE)) return;
     const [vector] = await this.embedder.embed([text], "document");
     this.store.add(`em_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, text, vector, GLOBAL_SCOPE);
   }

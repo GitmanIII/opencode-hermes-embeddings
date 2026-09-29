@@ -54,9 +54,9 @@ export class VectorStore {
     }));
   }
 
-  hasText(text: string, scope: string): boolean {
-    const row = this.db.query(`SELECT 1 FROM memo WHERE text = ? AND scope = ? LIMIT 1`).get(text, scope);
-    return !!row;
+  findByText(text: string, scope: string): string | null {
+    const row = this.db.query(`SELECT id FROM memo WHERE text = ? AND scope = ? LIMIT 1`).get(text, scope) as { id: string } | null;
+    return row?.id ?? null;
   }
 
   search(queryVector: number[], scopes: string[], limit: number, minScore: number): ScoredNote[] {

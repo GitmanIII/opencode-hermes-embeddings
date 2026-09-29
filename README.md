@@ -194,6 +194,12 @@ bun run test
 
 30 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, add/search, prefetch block, project isolation, global mirroring + dedupe, replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC), volume search, forget.
 
+## Roadmap
+
+- **Add-time near-duplicate guard** (next) — on `add`/mirror, a top-1 cosine check at/above `duplicateThreshold` skips or supersedes a near-duplicate, bounding growth at the source (O(N) per write, no idle pass). Complements the canonical dream.
+- **ANN index (`sqlite-vec`)** — *deferred, trigger-gated.* Brute-force streaming is ~3 µs/note with flat memory, so an approximate index is only worth it once measured need appears: store **> ~50k notes** or search **p95 > ~50 ms**. Preferred route keeps vectors in SQLite via a loadable extension (adds a binary dependency and uses approximate recall), so it needs its own benchmark before adopting.
+- **Store-wide contradiction pass** — full note-vs-note supersession needs ANN candidate generation; not viable as an O(N²) JS pass at personal-store scale.
+
 ## License
 
 MIT © GitmanIII. Compatible with opencode-hermes (module-spec external provider).

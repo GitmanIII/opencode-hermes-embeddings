@@ -54,6 +54,27 @@ curl -s localhost:8080/v1/embeddings -H 'content-type: application/json' \
 
 > `nomic-embed-text-v1.5` supports 8192 tokens and **requires** the `search_document:` / `search_query:` prefixes — this provider applies them for you (`prefixes: true` by default). Swapping models? Set `prefixes: false` for models that don't use them (e.g. `bge-m3`).
 
+## Keep it running (automatic)
+
+TEI is a service the provider connects to; it should be up whenever opencode runs.
+
+**Detached container (simplest):**
+```bash
+./scripts/run-tei.sh --detach     # -d; --restart unless-stopped, named opencode-hermes-tei
+./scripts/stop-tei.sh             # add --remove to delete the container
+```
+It comes back automatically whenever the Docker daemon starts.
+
+**`systemd --user` unit (starts at login):**
+```bash
+./scripts/run-tei.sh --detach      # create the container once
+mkdir -p ~/.config/systemd/user
+cp systemd/opencode-hermes-tei.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now opencode-hermes-tei.service
+```
+For an always-on box (start even when you're not logged in): `loginctl enable-linger "$USER"`.
+
 ## 2. Install this provider
 
 ```bash

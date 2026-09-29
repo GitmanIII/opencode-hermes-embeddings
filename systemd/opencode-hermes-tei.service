@@ -1,0 +1,29 @@
+# opencode-hermes TEI embeddings server (systemd --user unit).
+#
+# The container must exist once (create it detached):
+#   ./scripts/run-tei.sh --detach
+# Then enable this unit so TEI starts at login and is ready before opencode:
+#   mkdir -p ~/.config/systemd/user
+#   cp systemd/opencode-hermes-tei.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now opencode-hermes-tei.service
+#
+# To start it without logging in (e.g. always-on workstation):
+#   loginctl enable-linger "$USER"
+#
+# Adjust ExecStart/ExecStop paths if the repo isn't at ~/opencode-hermes-embeddings.
+
+[Unit]
+Description=opencode-hermes TEI embeddings server (Docker)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/opencode-hermes-embeddings/scripts/run-tei.sh --detach
+ExecStop=%h/opencode-hermes-embeddings/scripts/stop-tei.sh
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target

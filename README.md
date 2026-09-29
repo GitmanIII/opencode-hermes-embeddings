@@ -105,6 +105,29 @@ Measured on an RTX 3090 (nomic-embed-text-v1.5, single short note):
 
 Both are imperceptible for this workload (a few embeds per turn). TEI wins on latency/VRAM; the venv wins on setup (no Docker). Note the venv route pins `transformers<5` (nomic's remote code predates Transformers 5).
 
+## Other backends (Ollama, llama.cpp)
+
+Anything that serves OpenAI `/v1/embeddings` works — set `endpoint` + `model`, no code changes:
+
+**Ollama** (GGUF via llama.cpp):
+```bash
+ollama pull nomic-embed-text
+ollama serve                       # http://127.0.0.1:11434
+```
+```jsonc
+"providerOptions": { "endpoint": "http://127.0.0.1:11434/v1", "model": "nomic-embed-text", "prefixes": true }
+```
+
+**llama.cpp `llama-server`** (GGUF, no daemon):
+```bash
+llama-server --embedding -m nomic-embed-text-v1.5.Q8_0.gguf --host 127.0.0.1 --port 8080
+```
+```jsonc
+"providerOptions": { "endpoint": "http://127.0.0.1:8080/v1", "model": "nomic-embed-text-v1.5", "prefixes": true }
+```
+
+Ollama and llama.cpp **share the same engine**, so they perform nearly identically — that's why neither gets its own script. Note: vectors are close but not identical across engines/quantizations, so **use one backend per store** (or re-embed when switching).
+
 ## 2. Install this provider
 
 ```bash

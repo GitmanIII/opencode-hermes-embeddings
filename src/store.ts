@@ -185,6 +185,21 @@ export class VectorStore {
     return res.changes;
   }
 
+  /**
+   * Delete only tombstoned (superseded) rows for exact text. Used when
+   * resurrecting a re-added fact: a concurrent process may have inserted a live
+   * note for the same text during the embed await, and a blanket deleteByText
+   * would clobber it.
+   */
+  deleteTombstonesByText(text: string, scope?: string): number {
+    const t = (text ?? "").trim();
+    if (!t) return 0;
+    const res = scope
+      ? this.db.run(`DELETE FROM memo WHERE text = ? AND scope = ? AND superseded_by IS NOT NULL`, [t, scope])
+      : this.db.run(`DELETE FROM memo WHERE text = ? AND superseded_by IS NOT NULL`, [t]);
+    return res.changes;
+  }
+
   // ─── Dream support: tombstones + canonical flags ───
 
   /** Soft-delete: mark `id` as superseded by `byId`. */

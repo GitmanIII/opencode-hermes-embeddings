@@ -11,7 +11,7 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 
 ## How it works
 
-- `add` / `onMemoryWrite` → embed the note (`document` side) and store the vector. Built-in writes are mirrored: `replace` deletes the superseded text and stores the new one, `remove` propagates the deletion, and `demote` keeps the fact (append-only). `add` is idempotent per (text, scope) and re-checks after the embed await, so concurrent identical adds don't create duplicates.
+- `add` / `onMemoryWrite` → embed the note (`document` side) and store the vector. Built-in writes are mirrored: `replace` deletes the superseded text and stores the new one, `remove` propagates the deletion, and `demote` keeps the fact (append-only). `add` is idempotent per (text, scope) and re-checks after the embed await, so concurrent identical adds don't create duplicates; resurrecting a re-added fact clears only its **tombstoned** rows, so it can't clobber a live note raced in concurrently.
 - `prefetch(query)` → embed the user message (`query` side), cosine-search the store, inject the top matches as a `<provider-memory>` block.
 - `search` / `forget` → the `provider_memory` tool.
 - **Scoped**: notes are tagged `global` or `project:<id>`; a query only sees `global` + the **current** project — no cross-project bleed.
@@ -192,7 +192,7 @@ provider_memory search "when do we copy data off-site?"
 bun run test
 ```
 
-35 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, dims guard, add/search, concurrent-add dedupe, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
+36 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, dims guard, add/search, concurrent-add dedupe, tombstone-only cleanup, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
 
 ## Roadmap
 

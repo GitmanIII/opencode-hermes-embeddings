@@ -67,6 +67,18 @@ const dimHits = dstore.search([1, 0], ["global"], 5, -1);
 assert("search ignores notes with mismatched vector dims", dimHits.length === 1 && dimHits[0].id === "d2", JSON.stringify(dimHits.map((h) => h.id)));
 dstore.close();
 
+// Tombstone cleanup must never touch a live row (a concurrent process may have
+// inserted one for the same text during the embed await).
+const tstore = new VectorStore(path.join(TMP, "tombstone-delete.sqlite"));
+tstore.add("keep", "shared resurrection text", [1, 0], "global");
+tstore.add("drop", "shared resurrection text", [1, 0], "global", Date.now() - 1000);
+tstore.supersede("drop", "keep");
+assert(
+  "deleteTombstonesByText removes only the tombstone",
+  tstore.deleteTombstonesByText("shared resurrection text", "global") === 1 && tstore.findByText("shared resurrection text", "global") === "keep",
+);
+tstore.close();
+
 // Search streams row-by-row (no per-row Array.from): a planted nearest note wins at volume.
 const scale = new VectorStore(path.join(TMP, "scale.sqlite"));
 const SDIM = 32;

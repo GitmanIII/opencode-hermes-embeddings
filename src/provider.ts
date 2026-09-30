@@ -132,7 +132,7 @@ export class EmbeddingsMemoryProvider {
     if (existing) return { id: existing }; // idempotent
     // Re-adding text whose only remaining rows are dream tombstones: drop the
     // stale tombstones so the freshly embedded note is the single live copy.
-    this.store.deleteByText(text, scope);
+    this.store.deleteTombstonesByText(text, scope);
     const [vector] = await this.embedder.embed([text], "document");
     // The check-then-insert above is not atomic across the embed await: a second
     // caller may have inserted the same text meanwhile. Reuse its row instead of
@@ -187,7 +187,7 @@ export class EmbeddingsMemoryProvider {
     const text = content.trim();
     if (!text) return;
     if (this.store.findByText(text, GLOBAL_SCOPE)) return;
-    this.store.deleteByText(text, GLOBAL_SCOPE); // drop dream tombstones, if any
+    this.store.deleteTombstonesByText(text, GLOBAL_SCOPE); // drop dream tombstones, if any
     const [vector] = await this.embedder.embed([text], "document");
     if (this.store.findByText(text, GLOBAL_SCOPE)) return; // raced with a concurrent mirror
     this.store.add(this.newId(), text, vector, GLOBAL_SCOPE);

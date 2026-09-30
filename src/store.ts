@@ -28,6 +28,8 @@ export type SearchOptions = {
   now?: number;
   canonicalBoost?: number;
   includeSuperseded?: boolean;
+  /** Keep only the best-scoring note per exact text (before the `limit` cut). */
+  dedupeByText?: boolean;
 };
 
 export class VectorStore {
@@ -104,7 +106,12 @@ export class VectorStore {
 
     const scored: ScoredNote[] = [];
     for (const r of rows) {
-      const v = new Float32Array(r.vector.buffer, r.vector.byteOffset, r.vector.byteLength >> 2);
+      // Zero-copy view into the BLOB; fall back to a copy if the offset isn't
+      // 4-byte aligned (Float32Array requires alignment).
+      const v =
+        r.vector.byteOffset % 4 === 0
+          ? new Float32Array(r.vector.buffer, r.vector.byteOffset, r.vector.byteLength >> 2)
+          : new Float32Array(r.vector.slice().buffer, 0, r.vector.byteLength >> 2);
       const n = Math.min(q.length, v.length);
       let dot = 0;
       let vn2 = 0;
@@ -129,8 +136,20 @@ export class VectorStore {
     }
     const boost = opts?.canonicalBoost ?? 0;
     if (boost > 0) for (const s of scored) if (s.canonical) s.score += boost;
-    scored.sort((a, b) => b.score - a.score || b.created_at - a.created_at);
-    return scored.slice(0, Math.max(1, limit));
+    // Dedupe identical text (e.g. mirrored into both global and project scope)
+    // before the limit cut, so duplicates can't crowd out distinct hits.
+    let results = scored;
+    if (opts?.dedupeByText && scored.length > 1) {
+      const best = new Map<string, ScoredNote>();
+      for (const s of scored) {
+        const key = s.text.trim().toLowerCase();
+        const prev = best.get(key);
+        if (!prev || s.score > prev.score) best.set(key, s);
+      }
+      results = [...best.values()];
+    }
+    results.sort((a, b) => b.score - a.score || b.created_at - a.created_at);
+    return results.slice(0, Math.max(1, limit));
   }
 
   delete(id: string): void {

@@ -103,6 +103,15 @@ await provider.onMemoryWrite("add", "global shared fact about caches");
 const g = await provider.search("global shared fact caches", 5);
 assert("global mirrored note visible in project B", g.some((h) => h.text.includes("global shared fact")));
 
+// Dedupe happens before the limit cut: a text mirrored into two scopes must not
+// consume two of the top-K slots and crowd out a distinct hit.
+const dupLimit = await provider.search("shared duplicate across scopes marker", 2);
+assert(
+  "dedupe happens before the limit cut",
+  dupLimit.length === 2 && dupLimit.filter((h) => h.text === "shared duplicate across scopes marker").length === 1,
+  JSON.stringify(dupLimit.map((h) => h.text)),
+);
+
 // mirror dedupe + replace/remove propagation + demote keeps
 await provider.onMemoryWrite("add", "global shared fact about caches");
 assert("mirror dedupes identical global text", (await provider.search("global shared fact caches", 20)).filter((h) => h.text === "global shared fact about caches").length === 1);

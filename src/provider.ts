@@ -139,23 +139,13 @@ export class EmbeddingsMemoryProvider {
   async search(query: string, limit?: number): Promise<ProviderHit[]> {
     if (!query.trim()) return [];
     const [qv] = await this.embedder.embed([query], "query");
-    const opts: SearchOptions = {};
+    const opts: SearchOptions = { dedupeByText: true };
     if (this.recencyWeight > 0) {
       opts.recencyWeight = this.recencyWeight;
       opts.halfLifeMs = this.recencyHalfLifeDays * 86_400_000;
     }
     if (this.canonicalWeight > 0) opts.canonicalBoost = this.canonicalWeight;
-    const hits = this.store.search(qv, this.queryScopes(), limit ?? this.topK, this.minScore, Object.keys(opts).length ? opts : undefined);
-    // Dedupe by text (same note mirrored into multiple scopes) keeping best score.
-    const seen = new Set<string>();
-    const out: ProviderHit[] = [];
-    for (const h of hits) {
-      const key = h.text.trim().toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(h);
-    }
-    return out;
+    return this.store.search(qv, this.queryScopes(), limit ?? this.topK, this.minScore, opts);
   }
 
   async prefetch(query: string): Promise<{ text: string; hits: number }> {
@@ -209,17 +199,27 @@ export class EmbeddingsMemoryProvider {
 
     this.store.clearCanonical(scope);
 
-    for (const raw of canonical) {
-      const text = raw.trim();
-      if (!text) continue;
-      let id = this.store.findByText(text, scope);
+    // Pass 1: canonical facts already in the store are re-flagged in place.
+    // Dedupe first so a fact present in both MEMORY.md and USER.md is added once.
+    const facts = [...new Set(canonical.map((c) => c.trim()).filter(Boolean))];
+    const pending: string[] = [];
+    for (const text of facts) {
+      const id = this.store.findByText(text, scope);
       if (id) {
         this.store.clearSuperseded(id);
         this.store.setCanonical(id, true);
         stats.canonical++;
-        continue;
+      } else {
+        pending.push(text);
       }
-      const [vector] = await this.embedder.embed([text], "document");
+    }
+
+    // Pass 2: embed all new facts in ONE request, then supersede near-duplicates.
+    // (Batching turns N GPU round-trips into one; the GPU already batches.)
+    const vectors = pending.length ? await this.embedder.embed(pending, "document") : [];
+    for (let i = 0; i < pending.length; i++) {
+      const text = pending[i];
+      const vector = vectors[i];
       let superseded = this.store.search(vector, [scope], 10, dup).filter((h) => !h.canonical);
       if (!superseded.length && opts.judge) {
         const top = this.store.search(vector, [scope], 1, amb).find((h) => !h.canonical);
@@ -228,7 +228,7 @@ export class EmbeddingsMemoryProvider {
           if (await opts.judge(text, top.text)) superseded = [top];
         }
       }
-      id = this.newId();
+      const id = this.newId();
       this.store.add(id, text, vector, scope, now);
       this.store.setCanonical(id, true);
       stats.added++;

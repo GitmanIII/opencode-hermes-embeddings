@@ -106,11 +106,14 @@ export class VectorStore {
 
     const unique = [...new Set(scopes.filter(Boolean))];
     const where = unique.length ? `scope IN (${unique.map(() => "?").join(",")})` : `1=1`;
-    const filter = opts?.includeSuperseded ? "" : ` AND superseded_by IS NULL`;
+    // `dims = ?` skips vectors from a different model/quantization. Comparing a
+    // query against a mismatched vector would otherwise produce meaningless
+    // scores (the dot product just runs over the shorter length).
+    const filter = `${opts?.includeSuperseded ? "" : " AND superseded_by IS NULL"} AND dims = ?`;
     const stmt = this.db.query(
       `SELECT id, text, scope, created_at, superseded_by, canonical, vector FROM memo WHERE ${where}${filter}`,
     );
-    const rows = (unique.length ? stmt.iterate(...unique) : stmt.iterate()) as IterableIterator<{
+    const rows = stmt.iterate(...unique, q.length) as IterableIterator<{
       id: string;
       text: string;
       scope: string;

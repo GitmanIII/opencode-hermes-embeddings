@@ -15,8 +15,8 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 - `prefetch(query)` → embed the user message (`query` side), cosine-search the store, inject the top matches as a `<provider-memory>` block.
 - `search` / `forget` → the `provider_memory` tool.
 - **Scoped**: notes are tagged `global` or `project:<id>`; a query only sees `global` + the **current** project — no cross-project bleed.
-- `reconcile(canonical)` — the **dream** invoked on idle by opencode-hermes: notes made obsolete by a current canonical fact are **superseded** (tombstoned, excluded from recall); near-duplicates (`cosine ≥ duplicateThreshold`) are collapsed, and an optional `judge` resolves an ambiguous band. `hardDelete` GCs the tombstones. All new canonical facts are embedded in **one batched request** (was one per fact), and canonical facts are deduped across `MEMORY.md`/`USER.md`.
-- Vectors live in SQLite (BLOBs) with **brute-force cosine** and no native extension. Search **streams row-by-row with zero-copy float32 views** (no per-row allocation): measured ~3 µs/note (100k notes ≈ 0.34 s) at a flat ~60 MB RSS — ~4.5× faster and no memory blow-up vs the earlier materialize-then-map path. Identical text (a note mirrored into both scopes) is deduped **before** the top-K cut so it can't crowd out a distinct hit.
+- `reconcile(canonical)` — the **dream** invoked on idle by opencode-hermes: notes made obsolete by a current canonical fact are **superseded** (tombstoned, excluded from recall); near-duplicates (`cosine ≥ duplicateThreshold`) are collapsed, and an optional `judge` resolves an ambiguous band. opencode-hermes passes `hardDelete`, so each dream GCs its tombstones (the store stays bounded). All new canonical facts are embedded in **one batched request** (was one per fact), and canonical facts are deduped across `MEMORY.md`/`USER.md`.
+- Vectors live in SQLite (BLOBs) with **brute-force cosine** and no native extension. Search **streams row-by-row with zero-copy float32 views** (no per-row allocation): measured ~3 µs/note (100k notes ≈ 0.34 s) at a flat ~60 MB RSS — ~4.5× faster and no memory blow-up vs the earlier materialize-then-map path. Identical text (a note mirrored into both scopes) is deduped **before** the top-K cut so it can't crowd out a distinct hit. Vectors whose `dims` don't match the query are skipped, so switching models/quantizations can't silently produce garbage scores.
 
 ## Requirements
 
@@ -192,7 +192,7 @@ provider_memory search "when do we copy data off-site?"
 bun run test
 ```
 
-33 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, add/search, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
+34 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, dims guard, add/search, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
 
 ## Roadmap
 

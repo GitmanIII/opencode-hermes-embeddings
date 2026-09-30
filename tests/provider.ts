@@ -58,6 +58,15 @@ assert("without recency the higher-cosine note wins", byScore[0].id === "old", J
 assert("with recency the newer note wins", byRank[0].id === "new", JSON.stringify(byRank.map((h) => h.id)));
 rstore.close();
 
+// dims guard: vectors from a different model/quantization are skipped, not
+// scored against a shorter-longer dot product (silent garbage recall).
+const dstore = new VectorStore(path.join(TMP, "dims.sqlite"));
+dstore.add("d4", "old model note", [1, 0, 0, 0], "global");
+dstore.add("d2", "current model note", [1, 0], "global");
+const dimHits = dstore.search([1, 0], ["global"], 5, -1);
+assert("search ignores notes with mismatched vector dims", dimHits.length === 1 && dimHits[0].id === "d2", JSON.stringify(dimHits.map((h) => h.id)));
+dstore.close();
+
 // Search streams row-by-row (no per-row Array.from): a planted nearest note wins at volume.
 const scale = new VectorStore(path.join(TMP, "scale.sqlite"));
 const SDIM = 32;

@@ -134,6 +134,11 @@ export class EmbeddingsMemoryProvider {
     // stale tombstones so the freshly embedded note is the single live copy.
     this.store.deleteByText(text, scope);
     const [vector] = await this.embedder.embed([text], "document");
+    // The check-then-insert above is not atomic across the embed await: a second
+    // caller may have inserted the same text meanwhile. Reuse its row instead of
+    // creating a duplicate.
+    const raced = this.store.findByText(text, scope);
+    if (raced) return { id: raced };
     const id = this.newId();
     this.store.add(id, text, vector, scope);
     return { id };
@@ -184,6 +189,7 @@ export class EmbeddingsMemoryProvider {
     if (this.store.findByText(text, GLOBAL_SCOPE)) return;
     this.store.deleteByText(text, GLOBAL_SCOPE); // drop dream tombstones, if any
     const [vector] = await this.embedder.embed([text], "document");
+    if (this.store.findByText(text, GLOBAL_SCOPE)) return; // raced with a concurrent mirror
     this.store.add(this.newId(), text, vector, GLOBAL_SCOPE);
   }
 

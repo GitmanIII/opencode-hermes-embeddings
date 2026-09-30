@@ -93,6 +93,14 @@ assert("search ranks the relevant note first", hits.length >= 1 && hits[0].text.
 // idempotent add + cross-scope dedupe
 const a2 = await provider.add("Alpha beta gamma detector notes");
 assert("add is idempotent for same text+scope", a2.id === a.id && (await provider.search("alpha beta detector", 20)).filter((h) => h.text.includes("Alpha beta gamma")).length === 1, JSON.stringify(a2));
+// concurrent identical adds must not duplicate (check-then-insert races the embed await)
+await Promise.all([
+  provider.add("concurrent duplicate guard fact"),
+  provider.add("concurrent duplicate guard fact"),
+  provider.add("concurrent duplicate guard fact"),
+]);
+const conc = await provider.search("concurrent duplicate guard fact", 20);
+assert("concurrent identical adds dedupe to one note", conc.filter((h) => h.text === "concurrent duplicate guard fact").length === 1, JSON.stringify(conc.map((h) => h.text)));
 await provider.add("shared duplicate across scopes marker");
 await provider.onMemoryWrite("add", "shared duplicate across scopes marker"); // global copy
 const dup = await provider.search("shared duplicate across scopes marker", 20);

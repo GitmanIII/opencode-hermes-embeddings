@@ -31,12 +31,19 @@ export type EmbeddingsOptions = {
   queryPrefix?: string;
   topK?: number;
   /**
-   * Minimum cosine similarity for a note to be injected/returned (default 0.5).
-   * Score scales are model-specific: nomic-embed-text compresses high (unrelated
-   * text ~0.49–0.55, relevant ~0.61–0.84), so its full gate is ~0.58 while a
-   * lower-scale model needs less. 0 disables the gate (topK always injected).
+   * Minimum cosine similarity for a note to be injected/returned (default 0.58).
+   * Score scales are model-specific: the shipped default model nomic-embed-text
+   * compresses high (measured on a live store: unrelated text ~0.49–0.56,
+   * relevant ~0.61–0.84), so its full gate is ~0.58 — the default — while a
+   * lower-scale model needs a lower value. 0 disables the gate (topK always
+   * injected). A `warn` callback is used for one-time diagnostics.
    */
   minScore?: number;
+  /**
+   * Sink for one-time diagnostics (default `console.warn`). Not settable via
+   * config JSON; injectable for programmatic use and tests.
+   */
+  warn?: (msg: string) => void;
   dbPath?: string;
   /** Blend cosine with a recency term (0 = pure cosine, the default). */
   recencyWeight?: number;
@@ -65,8 +72,14 @@ export type ProviderHit = { id: string; text: string; score: number };
 const DEFAULT_ENDPOINT = "http://127.0.0.1:8080";
 const DEFAULT_MODEL = "nomic-ai/nomic-embed-text-v1.5";
 const GLOBAL_SCOPE = "global";
-/** Conservative relevance gate (below the ~0.58 full gate for nomic); 0 = off. */
-const DEFAULT_MIN_SCORE = 0.5;
+/**
+ * Relevance gate default. The shipped default model is nomic-embed-text, whose
+ * scale compresses high: measured on a real store, unrelated probes top out at
+ * ~0.49–0.56 and relevant hits at ~0.61–0.84, so ~0.58 drops every unrelated
+ * probe while keeping every relevant one. Other models need a lower value
+ * (see README); 0 disables the gate.
+ */
+const DEFAULT_MIN_SCORE = 0.58;
 
 export class EmbeddingsMemoryProvider {
   readonly name = "embeddings";
@@ -80,6 +93,9 @@ export class EmbeddingsMemoryProvider {
   private duplicateThreshold = 0.92;
   private ambiguousThreshold = 0.8;
   private projectId: string | null = null;
+  private warn: (msg: string) => void = console.warn;
+  /** Query dims already checked for legacy mismatches (warn at most once each). */
+  private warnedDims = new Set<number>();
 
   /** `embedder` is injectable for tests. */
   constructor(private opts: EmbeddingsOptions = {}, embedder?: Embedder) {
@@ -106,6 +122,8 @@ export class EmbeddingsMemoryProvider {
     this.duplicateThreshold = o.duplicateThreshold ?? 0.92;
     this.ambiguousThreshold = o.ambiguousThreshold ?? 0.8;
     this.projectId = ctx.projectId ?? null;
+    // `warn` may arrive via config JSON, where it can only be non-callable.
+    this.warn = typeof o.warn === "function" ? o.warn : console.warn;
     const dbPath = o.dbPath ?? path.join(ctx.memoryRoot, "embeddings.sqlite");
     this.store = new VectorStore(dbPath);
   }
@@ -155,6 +173,18 @@ export class EmbeddingsMemoryProvider {
   async search(query: string, limit?: number): Promise<ProviderHit[]> {
     if (!query.trim()) return [];
     const [qv] = await this.embedder.embed([query], "query");
+    // The `dims` filter silently drops notes embedded by a different model, so
+    // recall can look empty after a model/quantization switch. Say so once per
+    // query dimension instead of failing silently.
+    if (!this.warnedDims.has(qv.length)) {
+      this.warnedDims.add(qv.length);
+      const stale = this.store.mismatchedDims(this.queryScopes(), qv.length);
+      if (stale.length) {
+        this.warn(
+          `embeddings: note vectors with dimension(s) [${stale.join(", ")}] don't match the current model's ${qv.length}; those notes are skipped in recall (re-embed or clear the store to restore them).`,
+        );
+      }
+    }
     const opts: SearchOptions = { dedupeByText: true };
     if (this.recencyWeight > 0) {
       opts.recencyWeight = this.recencyWeight;

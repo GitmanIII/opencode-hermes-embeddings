@@ -227,13 +227,30 @@ assert(
 );
 pm.shutdown();
 
-// default minScore (0.5) gates irrelevant recall but keeps relevant matches
+// default minScore (0.58) gates irrelevant recall but keeps relevant matches
 const gated = new EmbeddingsMemoryProvider({ topK: 5, dbPath: path.join(TMP, "gate.sqlite") }, new FakeEmbedder());
 await gated.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projGate" });
 await gated.add("alpha beta gamma detector notes");
 assert("default minScore gates unrelated recall", (await gated.search("zzzz qqqq", 5)).length === 0);
 assert("default minScore still recalls a relevant note", (await gated.search("alpha beta detector", 5)).length >= 1);
 gated.shutdown();
+
+// Switching models gives the query a new dims; legacy notes are skipped by the
+// `dims` filter. That must warn once instead of silently returning empty recall.
+const legacyPath = path.join(TMP, "legacy-dims.sqlite");
+const legacyStore = new VectorStore(legacyPath);
+legacyStore.add("legacy", "legacy note from an older model", new Array(384).fill(0.1), "global");
+legacyStore.close();
+const warned: string[] = [];
+const pw = new EmbeddingsMemoryProvider({ topK: 5, dbPath: legacyPath, warn: (m) => warned.push(m), minScore: -1 }, new FakeEmbedder());
+await pw.initialize({ memoryRoot: TMP, prefetchLimit: 5 });
+await pw.add("current model note");
+await pw.search("current model note", 5);
+await pw.search("current model note", 5);
+assert("dims mismatch warns once per process", warned.length === 1 && warned[0].includes("384") && warned[0].includes("64"), JSON.stringify(warned));
+assert("mismatched-dims notes are not recalled", (await pw.search("legacy note from an older model", 5)).every((h) => !h.text.includes("legacy")));
+assert("matching-dims notes still recalled", (await pw.search("current model note", 5)).some((h) => h.text === "current model note"));
+pw.shutdown();
 
 provider.shutdown();
 await fs.rm(TMP, { recursive: true, force: true });

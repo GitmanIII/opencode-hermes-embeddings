@@ -16,7 +16,7 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 - `search` / `forget` → the `provider_memory` tool.
 - **Scoped**: notes are tagged `global` or `project:<id>`; a query only sees `global` + the **current** project — no cross-project bleed.
 - `reconcile(canonical)` — the **dream** invoked on idle by opencode-hermes: notes made obsolete by a current canonical fact are **superseded** (tombstoned, excluded from recall); near-duplicates (`cosine ≥ duplicateThreshold`) are collapsed, and an optional `judge` resolves an ambiguous band. opencode-hermes passes `hardDelete`, so each dream GCs its tombstones (the store stays bounded). All new canonical facts are embedded in **one batched request** (was one per fact), and canonical facts are deduped across `MEMORY.md`/`USER.md`.
-- Vectors live in SQLite (BLOBs) with **brute-force cosine** and no native extension. Search **streams row-by-row with zero-copy float32 views** (no per-row allocation): measured ~3 µs/note (100k notes ≈ 0.34 s) at a flat ~60 MB RSS — ~4.5× faster and no memory blow-up vs the earlier materialize-then-map path. Identical text (a note mirrored into both scopes) is deduped **before** the top-K cut so it can't crowd out a distinct hit. Vectors whose `dims` don't match the query are skipped, so switching models/quantizations can't silently produce garbage scores.
+- Vectors live in SQLite (BLOBs) with **brute-force cosine** and no native extension. Search **streams row-by-row with zero-copy float32 views** (no per-row allocation): measured ~3 µs/note (100k notes ≈ 0.34 s) at a flat ~60 MB RSS — ~4.5× faster and no memory blow-up vs the earlier materialize-then-map path. Identical text (a note mirrored into both scopes) is deduped **before** the top-K cut so it can't crowd out a distinct hit. Vectors whose `dims` don't match the query are skipped, so switching models/quantizations can't silently produce garbage scores — and a one-time warning is logged (once per query dims) so the skipped notes aren't silently lost from recall.
 
 ## Requirements
 
@@ -153,7 +153,7 @@ Point opencode-hermes at it — `~/.config/opencode/opencode-hermes.json`:
 
 Restart opencode. The log (`opencode-hermes.log`) should show `provider=embeddings`.
 
-> **`minScore` — tune per model.** It's the cosine floor a note must clear to be injected; `0` disables the gate (topK always injected). Score scales differ by model: `nomic-embed-text` compresses high, so its *unrelated* text still scores ~0.49–0.55 and truly relevant hits ~0.61–0.84. Measured on a real store, **≈0.58 is the full gate** for nomic (drops every unrelated probe, keeps every relevant top hit); the shipped default is a conservative `0.5`.
+> **`minScore` — tune per model.** It's the cosine floor a note must clear to be injected; `0` disables the gate (topK always injected). Score scales differ by model: `nomic-embed-text` compresses high, so its *unrelated* text still scores ~0.49–0.56 and truly relevant hits ~0.61–0.84. Measured on a real store, **≈0.58 is the full gate** for nomic (drops every unrelated probe, keeps every relevant top hit), so that is the default — matching the shipped default model. A lower-scale model needs a lower value (or `0` to disable).
 
 ## Options (`providerOptions`)
 
@@ -165,7 +165,7 @@ Restart opencode. The log (`opencode-hermes.log`) should show `provider=embeddin
 | `prefixes` | `true` | apply doc/query retrieval prefixes |
 | `docPrefix` / `queryPrefix` | nomic | override prefixes |
 | `topK` | `5` | notes injected per turn / max search results |
-| `minScore` | `0.5` | minimum cosine to inject; **model-specific** (nomic: ~0.58 fully gates, 0 = off) |
+| `minScore` | `0.58` | minimum cosine to inject; **model-specific** (default matches nomic's full gate; 0 = off) |
 | `recencyWeight` | `0` | blend cosine with a recency term (0 = pure cosine) |
 | `recencyHalfLifeDays` | `30` | recency half-life, in days |
 | `canonicalWeight` | `0` | additive score boost for canonical notes |
@@ -194,7 +194,7 @@ provider_memory search "when do we copy data off-site?"
 bun run test
 ```
 
-36 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, dims guard, add/search, concurrent-add dedupe, tombstone-only cleanup, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
+41 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, dims guard + mismatch warning, add/search, concurrent-add dedupe, tombstone-only cleanup, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
 
 ## Roadmap
 

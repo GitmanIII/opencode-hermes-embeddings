@@ -94,6 +94,20 @@ export class VectorStore {
   }
 
   /**
+   * Distinct active vector dims within `scopes` that differ from `currentDims`
+   * (e.g. notes embedded by a previous model). `search` skips these; this lets
+   * the caller warn instead of silently losing recall after a model switch.
+   */
+  mismatchedDims(scopes: string[], currentDims: number): number[] {
+    const unique = [...new Set(scopes.filter(Boolean))];
+    const where = unique.length ? `scope IN (${unique.map(() => "?").join(",")})` : `1=1`;
+    const rows = this.db
+      .query(`SELECT DISTINCT dims FROM memo WHERE ${where} AND superseded_by IS NULL AND dims <> ?`)
+      .all(...unique, currentDims) as { dims: number }[];
+    return rows.map((r) => r.dims);
+  }
+
+  /**
    * Brute-force cosine search, streamed row-by-row with zero-copy float32 views
    * (no per-row `Array.from`). Memory stays flat and throughput is ~6x a
    * materialize-then-map approach at personal scale (see tests/perf notes).

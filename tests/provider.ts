@@ -186,6 +186,18 @@ assert("dream does not duplicate an exact canonical fact", gStats.added === 0 &&
 assert("dream GC removes tombstones", gStats.removed >= 1, JSON.stringify(gStats));
 pg.shutdown();
 
+// multiple canonical facts in one reconcile are embedded in a single batched
+// request (2 new + 1 exact match); the exact match is not re-added.
+const pm = await mkProvider({ duplicateThreshold: 0.99 });
+await pm.onMemoryWrite("add", "gamma delta epsilon unique");
+const mStats = await pm.reconcile(["alpha beta one", "gamma delta epsilon unique", "zeta eta two"]);
+assert(
+  "dream handles multiple canonical facts in one batched pass",
+  mStats.canonical === 3 && mStats.added === 2 && mStats.superseded === 0,
+  JSON.stringify(mStats),
+);
+pm.shutdown();
+
 provider.shutdown();
 await fs.rm(TMP, { recursive: true, force: true });
 console.log(`\n${passed} passed, ${failed} failed`);

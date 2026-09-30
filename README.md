@@ -192,7 +192,7 @@ provider_memory search "when do we copy data off-site?"
 bun run test
 ```
 
-32 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, add/search, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection), volume search, forget.
+33 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, add/search, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
 
 ## Roadmap
 

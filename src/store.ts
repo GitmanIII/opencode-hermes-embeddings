@@ -37,6 +37,10 @@ export class VectorStore {
 
   constructor(path: string) {
     this.db = new Database(path);
+    // WAL + a busy timeout so several OpenCode processes can share one store
+    // without SQLITE_BUSY errors.
+    this.db.run(`PRAGMA journal_mode = WAL;`);
+    this.db.run(`PRAGMA busy_timeout = 5000;`);
     this.db.run(
       `CREATE TABLE IF NOT EXISTS memo (
          id TEXT PRIMARY KEY,
@@ -56,8 +60,13 @@ export class VectorStore {
   /** Add columns to stores created before tombstones/canonical existed. */
   private migrate(): void {
     const cols = new Set((this.db.query(`PRAGMA table_info(memo)`).all() as { name: string }[]).map((c) => c.name));
-    if (!cols.has("superseded_by")) this.db.run(`ALTER TABLE memo ADD COLUMN superseded_by TEXT`);
-    if (!cols.has("canonical")) this.db.run(`ALTER TABLE memo ADD COLUMN canonical INTEGER NOT NULL DEFAULT 0`);
+    try {
+      if (!cols.has("superseded_by")) this.db.run(`ALTER TABLE memo ADD COLUMN superseded_by TEXT`);
+      if (!cols.has("canonical")) this.db.run(`ALTER TABLE memo ADD COLUMN canonical INTEGER NOT NULL DEFAULT 0`);
+    } catch (err) {
+      // A concurrent process may have migrated between our PRAGMA read and here.
+      if (!/duplicate column name/i.test(String(err))) throw err;
+    }
   }
 
   add(id: string, text: string, vector: number[], scope: string, createdAt = Date.now()): void {

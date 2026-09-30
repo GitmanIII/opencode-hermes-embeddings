@@ -16,7 +16,7 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 - `search` / `forget` → the `provider_memory` tool.
 - **Scoped**: notes are tagged `global` or `project:<id>`; a query only sees `global` + the **current** project — no cross-project bleed.
 - `reconcile(canonical)` — the **dream** invoked on idle by opencode-hermes: notes made obsolete by a current canonical fact are **superseded** (tombstoned, excluded from recall); near-duplicates (`cosine ≥ duplicateThreshold`) are collapsed, and an optional `judge` resolves an ambiguous band. opencode-hermes passes `hardDelete`, so each dream GCs its tombstones (the store stays bounded). All new canonical facts are embedded in **one batched request** (was one per fact), and canonical facts are deduped across `MEMORY.md`/`USER.md`.
-- Vectors live in SQLite (BLOBs) with **brute-force cosine** and no native extension. Search **streams row-by-row with zero-copy float32 views** (no per-row allocation): measured ~3 µs/note (100k notes ≈ 0.34 s) at a flat ~60 MB RSS — ~4.5× faster and no memory blow-up vs the earlier materialize-then-map path. Identical text (a note mirrored into both scopes) is deduped **before** the top-K cut so it can't crowd out a distinct hit. Vectors whose `dims` don't match the query are skipped, so switching models/quantizations can't silently produce garbage scores — and a one-time warning is logged (once per query dims) so the skipped notes aren't silently lost from recall.
+- Vectors live in SQLite (BLOBs) with **brute-force cosine** and no native extension. Search **streams row-by-row with zero-copy float32 views** (no per-note vector copy): measured **~3.5 µs/note** (100k notes ≈ **0.35 s**) at **~80 MB RSS**, flat under the default gate — ~4.5× faster than the earlier materialize-then-map path (which held every 768-dim vector in JS). Identical text (a note mirrored into both scopes) is deduped **before** the top-K cut so it can't crowd out a distinct hit. Vectors whose `dims` don't match the query are skipped, so switching models/quantizations can't silently produce garbage scores — and a one-time warning is logged (once per query dims) so the skipped notes aren't silently lost from recall.
 
 ## Requirements
 
@@ -179,7 +179,7 @@ End-to-end, with opencode-hermes wired to this provider and TEI running on the G
 
 - **Explicit semantic search** — `provider_memory search "colour preference"` returned *"My favourite test colour is aubergine-42"* at **score 0.76**.
 - **Cross-session semantic recall** — in a *new* session, asking *"when do we copy data off-site?"* surfaced *"The nightly backup archives snapshots to cold storage at 03:00."* (no keyword overlap).
-- **Latency** — TEI `openai_embed` on GPU: **~1.2 ms** for a short note, **~4–18 ms** for longer prompts; 768-dim vectors; **~0.6 GB VRAM**.
+- **Latency** — TEI `openai_embed` on GPU: **~1.7 ms** for a short note (p50 over 50 runs), **~4–18 ms** for longer prompts; 768-dim vectors; **~0.6 GB VRAM**.
 - **Scoping** — a note added in a project is visible only in that project (+ `global`); verified by the isolation tests.
 
 Try it:
@@ -199,7 +199,7 @@ bun run test
 ## Roadmap
 
 - **Add-time near-duplicate guard** (next) — on `add`/mirror, a top-1 cosine check at/above `duplicateThreshold` skips or supersedes a near-duplicate, bounding growth at the source (O(N) per write, no idle pass). Complements the canonical dream.
-- **ANN index (`sqlite-vec`)** — *deferred, trigger-gated.* Brute-force streaming is ~3 µs/note with flat memory, so an approximate index is only worth it once measured need appears: store **> ~50k notes** or search **p95 > ~50 ms**. Preferred route keeps vectors in SQLite via a loadable extension (adds a binary dependency and uses approximate recall), so it needs its own benchmark before adopting.
+- **ANN index (`sqlite-vec`)** — *deferred, trigger-gated.* Brute-force streaming is ~3.5 µs/note at ~80 MB RSS, so an approximate index is only worth it once measured need appears: store **> ~50k notes** or search **p95 > ~50 ms**. Preferred route keeps vectors in SQLite via a loadable extension (adds a binary dependency and uses approximate recall), so it needs its own benchmark before adopting.
 - **Store-wide contradiction pass** — full note-vs-note supersession needs ANN candidate generation; not viable as an O(N²) JS pass at personal-store scale.
 
 ## License

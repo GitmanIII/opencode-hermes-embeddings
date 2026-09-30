@@ -30,6 +30,12 @@ export type EmbeddingsOptions = {
   docPrefix?: string;
   queryPrefix?: string;
   topK?: number;
+  /**
+   * Minimum cosine similarity for a note to be injected/returned (default 0.5).
+   * Score scales are model-specific: nomic-embed-text compresses high (unrelated
+   * text ~0.49–0.55, relevant ~0.61–0.84), so its full gate is ~0.58 while a
+   * lower-scale model needs less. 0 disables the gate (topK always injected).
+   */
   minScore?: number;
   dbPath?: string;
   /** Blend cosine with a recency term (0 = pure cosine, the default). */
@@ -59,13 +65,15 @@ export type ProviderHit = { id: string; text: string; score: number };
 const DEFAULT_ENDPOINT = "http://127.0.0.1:8080";
 const DEFAULT_MODEL = "nomic-ai/nomic-embed-text-v1.5";
 const GLOBAL_SCOPE = "global";
+/** Conservative relevance gate (below the ~0.58 full gate for nomic); 0 = off. */
+const DEFAULT_MIN_SCORE = 0.5;
 
 export class EmbeddingsMemoryProvider {
   readonly name = "embeddings";
   private store!: VectorStore;
   private embedder!: Embedder;
   private topK = 5;
-  private minScore = 0;
+  private minScore = DEFAULT_MIN_SCORE;
   private recencyWeight = 0;
   private recencyHalfLifeDays = 30;
   private canonicalWeight = 0;
@@ -91,7 +99,7 @@ export class EmbeddingsMemoryProvider {
       });
     }
     this.topK = o.topK ?? ctx.prefetchLimit ?? 5;
-    this.minScore = o.minScore ?? 0;
+    this.minScore = o.minScore ?? DEFAULT_MIN_SCORE;
     this.recencyWeight = o.recencyWeight ?? 0;
     this.recencyHalfLifeDays = o.recencyHalfLifeDays ?? 30;
     this.canonicalWeight = o.canonicalWeight ?? 0;

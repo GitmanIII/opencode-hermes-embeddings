@@ -227,6 +227,14 @@ assert(
 );
 pm.shutdown();
 
+// default minScore (0.5) gates irrelevant recall but keeps relevant matches
+const gated = new EmbeddingsMemoryProvider({ topK: 5, dbPath: path.join(TMP, "gate.sqlite") }, new FakeEmbedder());
+await gated.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projGate" });
+await gated.add("alpha beta gamma detector notes");
+assert("default minScore gates unrelated recall", (await gated.search("zzzz qqqq", 5)).length === 0);
+assert("default minScore still recalls a relevant note", (await gated.search("alpha beta detector", 5)).length >= 1);
+gated.shutdown();
+
 provider.shutdown();
 await fs.rm(TMP, { recursive: true, force: true });
 console.log(`\n${passed} passed, ${failed} failed`);

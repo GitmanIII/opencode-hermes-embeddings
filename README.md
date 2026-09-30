@@ -146,12 +146,14 @@ Point opencode-hermes at it — `~/.config/opencode/opencode-hermes.json`:
     "endpoint": "http://127.0.0.1:8080",
     "model": "nomic-ai/nomic-embed-text-v1.5",
     "topK": 5,
-    "minScore": 0.35
+    "minScore": 0.58
   }
 }
 ```
 
 Restart opencode. The log (`opencode-hermes.log`) should show `provider=embeddings`.
+
+> **`minScore` — tune per model.** It's the cosine floor a note must clear to be injected; `0` disables the gate (topK always injected). Score scales differ by model: `nomic-embed-text` compresses high, so its *unrelated* text still scores ~0.49–0.55 and truly relevant hits ~0.61–0.84. Measured on a real store, **≈0.58 is the full gate** for nomic (drops every unrelated probe, keeps every relevant top hit); the shipped default is a conservative `0.5`.
 
 ## Options (`providerOptions`)
 
@@ -163,7 +165,7 @@ Restart opencode. The log (`opencode-hermes.log`) should show `provider=embeddin
 | `prefixes` | `true` | apply doc/query retrieval prefixes |
 | `docPrefix` / `queryPrefix` | nomic | override prefixes |
 | `topK` | `5` | notes injected per turn / max search results |
-| `minScore` | `0` | minimum cosine to inject |
+| `minScore` | `0.5` | minimum cosine to inject; **model-specific** (nomic: ~0.58 fully gates, 0 = off) |
 | `recencyWeight` | `0` | blend cosine with a recency term (0 = pure cosine) |
 | `recencyHalfLifeDays` | `30` | recency half-life, in days |
 | `canonicalWeight` | `0` | additive score boost for canonical notes |

@@ -155,6 +155,10 @@ const afterCanon = await pd.search("detector alpha beta", 10);
 assert("dream hides the superseded note", !afterCanon.some((h) => h.text === "detector alpha beta gamma"), JSON.stringify(afterCanon.map((h) => h.text)));
 assert("dream keeps the canonical note", afterCanon.some((h) => h.text === "detector alpha beta delta"));
 assert("dream leaves distinct notes alone", (await pd.search("unrelated postgres backup", 5)).some((h) => h.text === "unrelated postgres backup procedure"));
+// Re-adding a fact whose only row is a dream tombstone must resurrect it, not
+// silently resolve to the hidden note.
+await pd.onMemoryWrite("add", "detector alpha beta gamma");
+assert("re-adding a superseded note resurrects it", (await pd.search("detector alpha beta gamma", 10)).some((h) => h.text === "detector alpha beta gamma"));
 pd.shutdown();
 
 // the judge resolves the ambiguous band

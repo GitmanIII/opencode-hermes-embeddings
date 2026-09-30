@@ -130,6 +130,9 @@ export class EmbeddingsMemoryProvider {
     const scope = tags?.includes("global") ? GLOBAL_SCOPE : this.projectScope();
     const existing = this.store.findByText(text, scope);
     if (existing) return { id: existing }; // idempotent
+    // Re-adding text whose only remaining rows are dream tombstones: drop the
+    // stale tombstones so the freshly embedded note is the single live copy.
+    this.store.deleteByText(text, scope);
     const [vector] = await this.embedder.embed([text], "document");
     const id = this.newId();
     this.store.add(id, text, vector, scope);
@@ -179,6 +182,7 @@ export class EmbeddingsMemoryProvider {
     const text = content.trim();
     if (!text) return;
     if (this.store.findByText(text, GLOBAL_SCOPE)) return;
+    this.store.deleteByText(text, GLOBAL_SCOPE); // drop dream tombstones, if any
     const [vector] = await this.embedder.embed([text], "document");
     this.store.add(this.newId(), text, vector, GLOBAL_SCOPE);
   }

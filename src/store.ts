@@ -72,8 +72,15 @@ export class VectorStore {
     ]);
   }
 
+  /**
+   * Find an ACTIVE (non-tombstoned) note by exact text. Tombstoned notes are
+   * intentionally invisible: re-adding their text must create/resurrect a
+   * recallable note rather than silently resolving to a superseded row.
+   */
   findByText(text: string, scope: string): string | null {
-    const row = this.db.query(`SELECT id FROM memo WHERE text = ? AND scope = ? LIMIT 1`).get(text, scope) as { id: string } | null;
+    const row = this.db
+      .query(`SELECT id FROM memo WHERE text = ? AND scope = ? AND superseded_by IS NULL LIMIT 1`)
+      .get(text, scope) as { id: string } | null;
     return row?.id ?? null;
   }
 

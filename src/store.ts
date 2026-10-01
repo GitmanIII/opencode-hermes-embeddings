@@ -10,7 +10,7 @@
  *    we fall back to brute force with identical results.
  *
  * The `memo` table is the source of truth; `vec_<dims>` tables are a derived
- * index that can be rebuilt from `memo` at any time (`rebuildAnn`).
+ * index that can be rebuilt from `memo` at any time (`rebuildVecIndex`).
  */
 import { Database } from "bun:sqlite";
 
@@ -54,7 +54,7 @@ type MemoRow = {
 export class VectorStore {
   private db: Database;
   /** True once the sqlite-vec extension is loaded and the index is usable. */
-  private annEnabled = false;
+  private vecEnabled = false;
   /** Dims for which a `vec_<dims>` table has been created this session. */
   private vecTables = new Set<number>();
 
@@ -95,8 +95,8 @@ export class VectorStore {
   }
 
   /** Whether the sqlite-vec accelerated path is active. */
-  get ann(): boolean {
-    return this.annEnabled;
+  get acceleratedIndex(): boolean {
+    return this.vecEnabled;
   }
 
   /**
@@ -107,21 +107,21 @@ export class VectorStore {
    * On the first enable (or after the index is dropped) the index is rebuilt
    * from `memo` once, then kept in sync incrementally.
    */
-  async initAnn(): Promise<boolean> {
-    if (this.annEnabled) return true;
+  async initVecIndex(): Promise<boolean> {
+    if (this.vecEnabled) return true;
     try {
       // Non-literal spec: don't make TS/bundlers hard-resolve the optional dep.
       const spec = "sqlite-vec";
       const mod = (await import(spec)) as { getLoadablePath?: () => string };
       if (typeof mod?.getLoadablePath !== "function") throw new Error("sqlite-vec: no getLoadablePath");
       this.db.loadExtension(mod.getLoadablePath());
-      this.annEnabled = true;
-      const built = (this.db.query(`SELECT value FROM meta WHERE key = 'ann_built'`).get() as { value?: string } | null)?.value;
-      if (built !== "1") this.rebuildAnn();
+      this.vecEnabled = true;
+      const built = (this.db.query(`SELECT value FROM meta WHERE key = 'vec_index_built'`).get() as { value?: string } | null)?.value;
+      if (built !== "1") this.rebuildVecIndex();
       else for (const d of this.activeDims()) this.ensureVecTable(d);
       return true;
     } catch {
-      this.annEnabled = false;
+      this.vecEnabled = false;
       return false;
     }
   }
@@ -156,7 +156,7 @@ export class VectorStore {
 
   /** Remove ids from whichever vec tables hold them (uses dims from `memo`). */
   private vecDelete(ids: { id: string; dims: number }[]): void {
-    if (!this.annEnabled || !ids.length) return;
+    if (!this.vecEnabled || !ids.length) return;
     const byDims = new Map<number, string[]>();
     for (const { id, dims } of ids) {
       if (!byDims.has(dims)) byDims.set(dims, []);
@@ -172,8 +172,8 @@ export class VectorStore {
    * Rebuild the derived index from `memo` (active notes only). Safe to call any
    * time the index looks stale; also runs automatically on first enable.
    */
-  rebuildAnn(): number {
-    if (!this.annEnabled) return 0;
+  rebuildVecIndex(): number {
+    if (!this.vecEnabled) return 0;
     for (const d of this.vecTables) this.db.run(`DROP TABLE IF EXISTS "vec_${d}"`);
     this.vecTables.clear();
     let n = 0;
@@ -187,7 +187,7 @@ export class VectorStore {
       this.vecInsert(r.id, v, r.scope, r.dims);
       n++;
     }
-    this.db.run(`INSERT OR REPLACE INTO meta(key, value) VALUES ('ann_built', '1')`);
+    this.db.run(`INSERT OR REPLACE INTO meta(key, value) VALUES ('vec_index_built', '1')`);
     return n;
   }
 
@@ -201,7 +201,7 @@ export class VectorStore {
       scope,
       createdAt,
     ]);
-    if (this.annEnabled) this.vecInsert(id, f32, scope, vector.length);
+    if (this.vecEnabled) this.vecInsert(id, f32, scope, vector.length);
   }
 
   /**
@@ -237,15 +237,15 @@ export class VectorStore {
    */
   search(queryVector: number[], scopes: string[], limit: number, minScore: number, opts?: SearchOptions): ScoredNote[] {
     const boosts = (opts?.recencyWeight ?? 0) > 0 || (opts?.canonicalBoost ?? 0) > 0;
-    if (this.annEnabled && !opts?.includeSuperseded && !boosts) {
-      const viaAnn = this.searchAnn(queryVector, scopes, limit, minScore, opts);
-      if (viaAnn) return viaAnn;
+    if (this.vecEnabled && !opts?.includeSuperseded && !boosts) {
+      const viaVec = this.searchVecIndex(queryVector, scopes, limit, minScore, opts);
+      if (viaVec) return viaVec;
     }
     return this.searchBrute(queryVector, scopes, limit, minScore, opts);
   }
 
   /** sqlite-vec KNN path; returns null when no vec table exists for the dims. */
-  private searchAnn(queryVector: number[], scopes: string[], limit: number, minScore: number, opts?: SearchOptions): ScoredNote[] | null {
+  private searchVecIndex(queryVector: number[], scopes: string[], limit: number, minScore: number, opts?: SearchOptions): ScoredNote[] | null {
     const q = Float32Array.from(queryVector);
     const dims = q.length;
     if (!this.vecTables.has(dims)) return null;
@@ -400,7 +400,7 @@ export class VectorStore {
 
   clearSuperseded(id: string): number {
     const changes = this.db.run(`UPDATE memo SET superseded_by = NULL WHERE id = ?`, [id]).changes;
-    if (this.annEnabled) this.reindexOne(id);
+    if (this.vecEnabled) this.reindexOne(id);
     return changes;
   }
 

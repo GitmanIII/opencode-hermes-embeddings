@@ -63,12 +63,12 @@ export type EmbeddingsOptions = {
    */
   dedupeOnWrite?: boolean;
   /**
-   * sqlite-vec accelerated search: `"auto"` (default) uses it when the optional
-   * `sqlite-vec` package is installed, else falls back to brute force; `true`
+   * Accelerated search via the optional `sqlite-vec` extension: `"auto"`
+   * (default) uses it when installed, else falls back to brute force; `true`
    * warns when unavailable; `false` forces brute force. Results are identical
-   * (vec0 is an exact SIMD KNN, not approximate).
+   * (vec0 is an **exact** KNN — SIMD-accelerated, *not* approximate).
    */
-  ann?: "auto" | boolean;
+  accelerate?: "auto" | boolean;
   /** Info sink for the one-line startup report (default `console.log`). */
   log?: (msg: string) => void;
 };
@@ -109,7 +109,7 @@ export class EmbeddingsMemoryProvider {
   private duplicateThreshold = 0.92;
   private ambiguousThreshold = 0.8;
   private dedupeOnWrite = true;
-  private ann: "auto" | boolean = "auto";
+  private accelerate: "auto" | boolean = "auto";
   private projectId: string | null = null;
   private warn: (msg: string) => void = console.warn;
   private log: (msg: string) => void = console.log;
@@ -141,26 +141,27 @@ export class EmbeddingsMemoryProvider {
     this.duplicateThreshold = o.duplicateThreshold ?? 0.92;
     this.ambiguousThreshold = o.ambiguousThreshold ?? 0.8;
     this.dedupeOnWrite = o.dedupeOnWrite ?? true;
-    this.ann = o.ann ?? "auto";
+    this.accelerate = o.accelerate ?? "auto";
     this.projectId = ctx.projectId ?? null;
     // `warn`/`log` may arrive via config JSON, where they can only be non-callable.
     this.warn = typeof o.warn === "function" ? o.warn : console.warn;
     this.log = typeof o.log === "function" ? o.log : console.log;
     const dbPath = o.dbPath ?? path.join(ctx.memoryRoot, "embeddings.sqlite");
     this.store = new VectorStore(dbPath);
-    // Optional sqlite-vec accelerator: exact (~3x faster, ~25% smaller). Falls
-    // back to brute force when the optional package isn't installed.
-    if (this.ann !== false) {
-      const ok = await this.store.initAnn();
-      if (!ok && this.ann === true) this.warn("embeddings: sqlite-vec not available; falling back to brute-force search.");
+    // Optional sqlite-vec accelerator: exact KNN, SIMD (~3x faster, ~25%
+    // smaller). Falls back to brute force when the optional package isn't
+    // installed. Not approximate — results are identical.
+    if (this.accelerate !== false) {
+      const ok = await this.store.initVecIndex();
+      if (!ok && this.accelerate === true) this.warn("embeddings: sqlite-vec not available; falling back to brute-force search.");
     }
-    // Observable startup report: which search index is active (was silent under "auto").
-    this.log(`embeddings: search index = ${this.store.ann ? "sqlite-vec (exact SIMD KNN)" : "brute force"}`);
+    // Observable startup report: which search index is active.
+    this.log(`embeddings: search index = ${this.store?.acceleratedIndex ? "sqlite-vec (exact KNN, SIMD)" : "brute-force"}`);
   }
 
-  /** Whether the sqlite-vec accelerated search path is active. */
-  annActive(): boolean {
-    return this.store?.ann ?? false;
+  /** The active search path: `"sqlite-vec"` (exact SIMD KNN) or `"brute-force"`. */
+  searchIndex(): "sqlite-vec" | "brute-force" {
+    return this.store?.acceleratedIndex ? "sqlite-vec" : "brute-force";
   }
 
   /** opencode-hermes calls this per session so recall is project-scoped. */

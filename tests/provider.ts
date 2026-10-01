@@ -74,47 +74,47 @@ const AD = 16;
 const rnd = () => Array.from({ length: AD }, () => Math.random());
 const ap = new VectorStore(path.join(TMP, "ann.sqlite"));
 const notes = Array.from({ length: 400 }, (_, i) => ({
-  id: `a${i}`, text: `ann note ${i}`, scope: i % 5 === 0 ? "project:ann" : "global", vec: rnd(),
+  id: `a${i}`, text: `vec note ${i}`, scope: i % 5 === 0 ? "project:vec" : "global", vec: rnd(),
 }));
 for (const n of notes) ap.add(n.id, n.text, n.vec, n.scope);
 const aq = rnd();
-const aScopes = ["global", "project:ann"];
+const aScopes = ["global", "project:vec"];
 const brute = ap.search(aq, aScopes, 10, -1, { dedupeByText: true });
-const annOk = await ap.initAnn();
-assert("sqlite-vec loads and activates (optional dep present)", annOk, "initAnn returned false");
+const annOk = await ap.initVecIndex();
+assert("sqlite-vec loads and activates (optional dep present)", annOk, "initVecIndex returned false");
 if (annOk) {
-  const ann = ap.search(aq, aScopes, 10, -1, { dedupeByText: true });
+  const viaVec = ap.search(aq, aScopes, 10, -1, { dedupeByText: true });
   assert(
-    "ANN top-K is identical to brute force",
-    JSON.stringify(ann.map((h) => h.id)) === JSON.stringify(brute.map((h) => h.id)),
-    JSON.stringify({ ann: ann.map((h) => h.id), brute: brute.map((h) => h.id) }),
+    "sqlite-vec top-K is identical to brute force",
+    JSON.stringify(viaVec.map((h) => h.id)) === JSON.stringify(brute.map((h) => h.id)),
+    JSON.stringify({ vec: viaVec.map((h) => h.id), brute: brute.map((h) => h.id) }),
   );
 }
 const victim = notes.find((n) => n.scope === "global")!;
 ap.supersede(victim.id, "a0");
 if (annOk) {
-  assert("superseded note drops out of ANN", !ap.search(victim.vec, ["global"], 5, 0.99).some((h) => h.id === victim.id));
+  assert("superseded note drops out of the index", !ap.search(victim.vec, ["global"], 5, 0.99).some((h) => h.id === victim.id));
   ap.clearSuperseded(victim.id);
-  assert("clearSuperseded restores the note to ANN", ap.search(victim.vec, ["global"], 1, 0.99)[0]?.id === victim.id);
+  assert("clearSuperseded restores the note to the index", ap.search(victim.vec, ["global"], 1, 0.99)[0]?.id === victim.id);
 }
 ap.delete(victim.id);
-if (annOk) assert("deleted note is gone from ANN", !ap.search(victim.vec, ["global"], 5, 0.99).some((h) => h.id === victim.id));
-assert("rebuildAnn repopulates the index", (() => { const n = ap.rebuildAnn(); return !annOk || n > 0; })());
+if (annOk) assert("deleted note is gone from the index", !ap.search(victim.vec, ["global"], 5, 0.99).some((h) => h.id === victim.id));
+assert("rebuildVecIndex repopulates the index", (() => { const n = ap.rebuildVecIndex(); return !annOk || n > 0; })());
 ap.close();
 
-// provider wiring: annActive reflects the extension, and ann:false forces brute force
+// provider wiring: searchIndex reflects the extension, and accelerate:false forces brute force
 const annProv = new EmbeddingsMemoryProvider({ topK: 5, minScore: 0.01, dbPath: path.join(TMP, "ann-prov.sqlite") }, new FakeEmbedder());
 await annProv.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projAnn" });
-assert("provider annActive matches extension availability", annProv.annActive() === annOk, `annActive=${annProv.annActive()} annOk=${annOk}`);
-await annProv.add("ann provider alpha note");
-assert("provider ANN search finds its note", (await annProv.search("ann provider alpha note", 5)).some((h) => h.text === "ann provider alpha note"));
+assert("provider searchIndex matches extension availability", annProv.searchIndex() === (annOk ? "sqlite-vec" : "brute-force"), `searchIndex=${annProv.searchIndex()} annOk=${annOk}`);
+await annProv.add("vec provider alpha note");
+assert("provider sqlite-vec search finds its note", (await annProv.search("vec provider alpha note", 5)).some((h) => h.text === "vec provider alpha note"));
 annProv.shutdown();
 
-const bruteProv = new EmbeddingsMemoryProvider({ topK: 5, minScore: 0.01, ann: false, dbPath: path.join(TMP, "ann-off.sqlite") }, new FakeEmbedder());
+const bruteProv = new EmbeddingsMemoryProvider({ topK: 5, minScore: 0.01, accelerate: false, dbPath: path.join(TMP, "ann-off.sqlite") }, new FakeEmbedder());
 await bruteProv.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projOff" });
-assert("ann:false forces the brute-force path", bruteProv.annActive() === false);
-await bruteProv.add("ann disabled alpha note");
-assert("brute-force provider still searches", (await bruteProv.search("ann disabled alpha note", 5)).some((h) => h.text === "ann disabled alpha note"));
+assert("accelerate:false forces the brute-force path", bruteProv.searchIndex() === "brute-force");
+await bruteProv.add("vec disabled alpha note");
+assert("brute-force provider still searches", (await bruteProv.search("vec disabled alpha note", 5)).some((h) => h.text === "vec disabled alpha note"));
 bruteProv.shutdown();
 
 // startup observability: the active search index is reported once

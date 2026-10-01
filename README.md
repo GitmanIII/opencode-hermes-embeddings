@@ -23,7 +23,7 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 - [opencode-hermes](https://github.com/GitmanIII/opencode-hermes) **>= v0.5.0** (external provider loading + `providerOptions`/`projectId`); the **dream** (`reconcile`) needs **>= v0.7.0**.
 - A running **TEI** server with a CUDA GPU.
 - Bun (opencode-hermes runtime).
-- **Optional:** `sqlite-vec` — ships as an optional dependency (prebuilt binaries for linux/darwin/windows x64+arm64). It powers the accelerated search index; without it (unsupported platform, or `ann: false`) the provider uses brute force with identical results.
+- **Optional:** `sqlite-vec` — ships as an optional dependency (prebuilt binaries for linux/darwin/windows x64+arm64). It powers the accelerated search index (exact KNN); without it (unsupported platform, or `accelerate: false`) the provider uses brute force with identical results.
 
 ## 1. Run TEI (GPU, Docker)
 
@@ -173,7 +173,7 @@ Restart opencode. The log (`opencode-hermes.log`) should show `provider=embeddin
 | `duplicateThreshold` | `0.92` | cosine ≥ this is a duplicate (dream collapse + add-time guard) |
 | `ambiguousThreshold` | `0.8` | dream: cosine ≥ this consults the judge |
 | `dedupeOnWrite` | `true` | add-time: skip a note whose nearest same-scope note is ≥ `duplicateThreshold` |
-| `ann` | `"auto"` | sqlite-vec accelerated search: `"auto"` (use when installed) / `true` (warn if unavailable) / `false` (force brute force) |
+| `accelerate` | `"auto"` | sqlite-vec accelerated search (exact KNN, not approximate): `"auto"` (use when installed) / `true` (warn if unavailable) / `false` (force brute force) |
 | `dbPath` | `<memoryRoot>/embeddings.sqlite` | vector store path |
 
 > **`duplicateThreshold` (0.92) — calibrated.** On the live nomic store, same-fact paraphrases scored **0.935–0.982** and the most-similar *distinct* notes scored **≤0.841** (hand-built hard negatives ≤0.789), so 0.92 sits in the gap with a deliberate high bias: a false merge silently loses a distinct fact, while a miss only leaves a duplicate (a later add or the idle dream may still collapse it).
@@ -199,7 +199,7 @@ provider_memory search "when do we copy data off-site?"
 bun run test
 ```
 
-57 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, dims guard + mismatch warning, **sqlite-vec parity vs brute force + incremental sync (supersede/restore/delete/rebuild) + `ann:false` fallback + startup index report**, add-time near-dup guard (skip/disable/mirror), add/search, concurrent-add dedupe, tombstone-only cleanup, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
+57 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, dims guard + mismatch warning, **sqlite-vec parity vs brute force + incremental sync (supersede/restore/delete/rebuild) + `accelerate:false` fallback + startup index report**, add-time near-dup guard (skip/disable/mirror), add/search, concurrent-add dedupe, tombstone-only cleanup, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
 
 ## Roadmap
 

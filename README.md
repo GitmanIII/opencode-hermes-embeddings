@@ -16,13 +16,14 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 - `search` / `forget` → the `provider_memory` tool.
 - **Scoped**: notes are tagged `global` or `project:<id>`; a query only sees `global` + the **current** project — no cross-project bleed.
 - `reconcile(canonical)` — the **dream** invoked on idle by opencode-hermes: notes made obsolete by a current canonical fact are **superseded** (tombstoned, excluded from recall); near-duplicates (`cosine ≥ duplicateThreshold`) are collapsed, and an optional `judge` resolves an ambiguous band. opencode-hermes passes `hardDelete`, so each dream GCs its tombstones (the store stays bounded). All new canonical facts are embedded in **one batched request** (was one per fact), and canonical facts are deduped across `MEMORY.md`/`USER.md`.
-- Vectors live in SQLite (BLOBs) with **brute-force cosine** and no native extension. Search **streams row-by-row with zero-copy float32 views** (no per-note vector copy): measured **~3.5 µs/note** (100k notes ≈ **0.35 s**) at **~80 MB RSS**, flat under the default gate — ~4.5× faster than the earlier materialize-then-map path (which held every 768-dim vector in JS). Identical text (a note mirrored into both scopes) is deduped **before** the top-K cut so it can't crowd out a distinct hit. Vectors whose `dims` don't match the query are skipped, so switching models/quantizations can't silently produce garbage scores — and a one-time warning is logged (once per query dims) so the skipped notes aren't silently lost from recall.
+- Vectors live in SQLite (BLOBs). Search has **two interchangeable, result-identical paths**: **brute force** (always available — streams row-by-row with zero-copy float32 views, no per-note vector copy; measured **~3.5 µs/note**, 100k ≈ **0.35 s**, ~80 MB RSS) and an optional **sqlite-vec** `vec0` index — an **exact** SIMD KNN (**~1.1 µs/note**, 100k ≈ **0.11 s**, ~25% smaller) that is auto-detected and silently falls back to brute force when the optional `sqlite-vec` package isn't installed. Identical text (a note mirrored into both scopes) is deduped **before** the top-K cut so it can't crowd out a distinct hit. Vectors whose `dims` don't match the query are skipped, so switching models/quantizations can't silently produce garbage scores — and a one-time warning is logged (once per query dims) so the skipped notes aren't silently lost from recall.
 
 ## Requirements
 
 - [opencode-hermes](https://github.com/GitmanIII/opencode-hermes) **>= v0.5.0** (external provider loading + `providerOptions`/`projectId`); the **dream** (`reconcile`) needs **>= v0.7.0**.
 - A running **TEI** server with a CUDA GPU.
 - Bun (opencode-hermes runtime).
+- **Optional:** `sqlite-vec` — ships as an optional dependency (prebuilt binaries for linux/darwin/windows x64+arm64). It powers the accelerated search index; without it (unsupported platform, or `ann: false`) the provider uses brute force with identical results.
 
 ## 1. Run TEI (GPU, Docker)
 
@@ -172,6 +173,7 @@ Restart opencode. The log (`opencode-hermes.log`) should show `provider=embeddin
 | `duplicateThreshold` | `0.92` | cosine ≥ this is a duplicate (dream collapse + add-time guard) |
 | `ambiguousThreshold` | `0.8` | dream: cosine ≥ this consults the judge |
 | `dedupeOnWrite` | `true` | add-time: skip a note whose nearest same-scope note is ≥ `duplicateThreshold` |
+| `ann` | `"auto"` | sqlite-vec accelerated search: `"auto"` (use when installed) / `true` (warn if unavailable) / `false` (force brute force) |
 | `dbPath` | `<memoryRoot>/embeddings.sqlite` | vector store path |
 
 > **`duplicateThreshold` (0.92) — calibrated.** On the live nomic store, same-fact paraphrases scored **0.935–0.982** and the most-similar *distinct* notes scored **≤0.841** (hand-built hard negatives ≤0.789), so 0.92 sits in the gap with a deliberate high bias: a false merge silently loses a distinct fact, while a miss only leaves a duplicate (a later add or the idle dream may still collapse it).
@@ -197,12 +199,11 @@ provider_memory search "when do we copy data off-site?"
 bun run test
 ```
 
-46 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, dims guard + mismatch warning, add-time near-dup guard (skip/disable/mirror), add/search, concurrent-add dedupe, tombstone-only cleanup, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
+56 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, dims guard + mismatch warning, **sqlite-vec parity vs brute force + incremental sync (supersede/restore/delete/rebuild) + `ann:false` fallback**, add-time near-dup guard (skip/disable/mirror), add/search, concurrent-add dedupe, tombstone-only cleanup, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
 
 ## Roadmap
 
-- **ANN index (`sqlite-vec`)** — *deferred, trigger-gated.* Brute-force streaming is ~3.5 µs/note at ~80 MB RSS, so an approximate index is only worth it once measured need appears: store **> ~50k notes** or search **p95 > ~50 ms**. Preferred route keeps vectors in SQLite via a loadable extension (adds a binary dependency and uses approximate recall), so it needs its own benchmark before adopting.
-- **Store-wide contradiction pass** — full note-vs-note supersession needs ANN candidate generation; not viable as an O(N²) JS pass at personal-store scale.
+- **Store-wide contradiction pass** — full **note-vs-note** supersession (the dream currently reconciles notes against *canonical* facts only). The blocking O(N²) JS comparison is gone now that per-note `vec0` KNN can generate candidates in C; still deferred until the add-time guard + canonical dream prove insufficient.
 
 ## License
 

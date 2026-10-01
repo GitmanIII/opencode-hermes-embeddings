@@ -67,6 +67,56 @@ const dimHits = dstore.search([1, 0], ["global"], 5, -1);
 assert("search ignores notes with mismatched vector dims", dimHits.length === 1 && dimHits[0].id === "d2", JSON.stringify(dimHits.map((h) => h.id)));
 dstore.close();
 
+// ── sqlite-vec accelerated index (optional) ──
+// The derived vec0 index must return exactly the brute-force top-K, and stay in
+// sync as notes are superseded / restored / deleted.
+const AD = 16;
+const rnd = () => Array.from({ length: AD }, () => Math.random());
+const ap = new VectorStore(path.join(TMP, "ann.sqlite"));
+const notes = Array.from({ length: 400 }, (_, i) => ({
+  id: `a${i}`, text: `ann note ${i}`, scope: i % 5 === 0 ? "project:ann" : "global", vec: rnd(),
+}));
+for (const n of notes) ap.add(n.id, n.text, n.vec, n.scope);
+const aq = rnd();
+const aScopes = ["global", "project:ann"];
+const brute = ap.search(aq, aScopes, 10, -1, { dedupeByText: true });
+const annOk = await ap.initAnn();
+assert("sqlite-vec loads and activates (optional dep present)", annOk, "initAnn returned false");
+if (annOk) {
+  const ann = ap.search(aq, aScopes, 10, -1, { dedupeByText: true });
+  assert(
+    "ANN top-K is identical to brute force",
+    JSON.stringify(ann.map((h) => h.id)) === JSON.stringify(brute.map((h) => h.id)),
+    JSON.stringify({ ann: ann.map((h) => h.id), brute: brute.map((h) => h.id) }),
+  );
+}
+const victim = notes.find((n) => n.scope === "global")!;
+ap.supersede(victim.id, "a0");
+if (annOk) {
+  assert("superseded note drops out of ANN", !ap.search(victim.vec, ["global"], 5, 0.99).some((h) => h.id === victim.id));
+  ap.clearSuperseded(victim.id);
+  assert("clearSuperseded restores the note to ANN", ap.search(victim.vec, ["global"], 1, 0.99)[0]?.id === victim.id);
+}
+ap.delete(victim.id);
+if (annOk) assert("deleted note is gone from ANN", !ap.search(victim.vec, ["global"], 5, 0.99).some((h) => h.id === victim.id));
+assert("rebuildAnn repopulates the index", (() => { const n = ap.rebuildAnn(); return !annOk || n > 0; })());
+ap.close();
+
+// provider wiring: annActive reflects the extension, and ann:false forces brute force
+const annProv = new EmbeddingsMemoryProvider({ topK: 5, minScore: 0.01, dbPath: path.join(TMP, "ann-prov.sqlite") }, new FakeEmbedder());
+await annProv.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projAnn" });
+assert("provider annActive matches extension availability", annProv.annActive() === annOk, `annActive=${annProv.annActive()} annOk=${annOk}`);
+await annProv.add("ann provider alpha note");
+assert("provider ANN search finds its note", (await annProv.search("ann provider alpha note", 5)).some((h) => h.text === "ann provider alpha note"));
+annProv.shutdown();
+
+const bruteProv = new EmbeddingsMemoryProvider({ topK: 5, minScore: 0.01, ann: false, dbPath: path.join(TMP, "ann-off.sqlite") }, new FakeEmbedder());
+await bruteProv.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projOff" });
+assert("ann:false forces the brute-force path", bruteProv.annActive() === false);
+await bruteProv.add("ann disabled alpha note");
+assert("brute-force provider still searches", (await bruteProv.search("ann disabled alpha note", 5)).some((h) => h.text === "ann disabled alpha note"));
+bruteProv.shutdown();
+
 // Tombstone cleanup must never touch a live row (a concurrent process may have
 // inserted one for the same text during the embed await).
 const tstore = new VectorStore(path.join(TMP, "tombstone-delete.sqlite"));

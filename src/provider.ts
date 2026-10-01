@@ -55,6 +55,13 @@ export type EmbeddingsOptions = {
   duplicateThreshold?: number;
   /** Cosine at/above which the dream judge is consulted (default 0.8). */
   ambiguousThreshold?: number;
+  /**
+   * Add-time near-duplicate guard (default true): skip an `add`/mirror whose
+   * nearest active note in the same scope scores >= `duplicateThreshold`. Bounds
+   * store growth at the source (one extra scan per write) instead of waiting for
+   * the idle dream. `false` (or a non-positive `duplicateThreshold`) disables it.
+   */
+  dedupeOnWrite?: boolean;
 };
 
 /** Dream reconciliation options (structurally matches opencode-hermes). */
@@ -92,6 +99,7 @@ export class EmbeddingsMemoryProvider {
   private canonicalWeight = 0;
   private duplicateThreshold = 0.92;
   private ambiguousThreshold = 0.8;
+  private dedupeOnWrite = true;
   private projectId: string | null = null;
   private warn: (msg: string) => void = console.warn;
   /** Query dims already checked for legacy mismatches (warn at most once each). */
@@ -121,6 +129,7 @@ export class EmbeddingsMemoryProvider {
     this.canonicalWeight = o.canonicalWeight ?? 0;
     this.duplicateThreshold = o.duplicateThreshold ?? 0.92;
     this.ambiguousThreshold = o.ambiguousThreshold ?? 0.8;
+    this.dedupeOnWrite = o.dedupeOnWrite ?? true;
     this.projectId = ctx.projectId ?? null;
     // `warn` may arrive via config JSON, where it can only be non-callable.
     this.warn = typeof o.warn === "function" ? o.warn : console.warn;
@@ -150,6 +159,17 @@ export class EmbeddingsMemoryProvider {
     return "A semantic memory provider (embeddings) is active: relevant notes are recalled automatically before each turn; use the provider_memory tool to search or add notes.";
   }
 
+  /**
+   * Nearest active note in `scope` when it is a near-duplicate of `vector`
+   * (cosine >= `duplicateThreshold`) — its id, else null. The add-time guard:
+   * skipping the write keeps the existing (often canonical) note and bounds
+   * growth. Disabled by `dedupeOnWrite: false` or a non-positive threshold.
+   */
+  private nearDuplicateId(vector: number[], scope: string): string | null {
+    if (!this.dedupeOnWrite || this.duplicateThreshold <= 0) return null;
+    return this.store.search(vector, [scope], 1, this.duplicateThreshold)[0]?.id ?? null;
+  }
+
   async add(content: string, tags?: string[]): Promise<{ id: string }> {
     const text = content.trim();
     if (!text) throw new Error("add requires content");
@@ -165,6 +185,11 @@ export class EmbeddingsMemoryProvider {
     // creating a duplicate.
     const raced = this.store.findByText(text, scope);
     if (raced) return { id: raced };
+    // Near-duplicate of an existing note: keep it rather than storing a
+    // paraphrase. The idle dream still reconciles against canonical memory, so
+    // freshness relative to MEMORY.md/USER.md is unaffected.
+    const near = this.nearDuplicateId(vector, scope);
+    if (near) return { id: near };
     const id = this.newId();
     this.store.add(id, text, vector, scope);
     return { id };
@@ -228,6 +253,7 @@ export class EmbeddingsMemoryProvider {
     this.store.deleteTombstonesByText(text, GLOBAL_SCOPE); // drop dream tombstones, if any
     const [vector] = await this.embedder.embed([text], "document");
     if (this.store.findByText(text, GLOBAL_SCOPE)) return; // raced with a concurrent mirror
+    if (this.nearDuplicateId(vector, GLOBAL_SCOPE)) return; // skip a paraphrase
     this.store.add(this.newId(), text, vector, GLOBAL_SCOPE);
   }
 

@@ -11,7 +11,7 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 
 ## How it works
 
-- `add` / `onMemoryWrite` → embed the note (`document` side) and store the vector. Built-in writes are mirrored: `replace` deletes the superseded text and stores the new one, `remove` propagates the deletion, and `demote` keeps the fact (append-only). `add` is idempotent per (text, scope) and re-checks after the embed await, so concurrent identical adds don't create duplicates; resurrecting a re-added fact clears only its **tombstoned** rows, so it can't clobber a live note raced in concurrently.
+- `add` / `onMemoryWrite` → embed the note (`document` side) and store the vector. Built-in writes are mirrored: `replace` deletes the superseded text and stores the new one, `remove` propagates the deletion, and `demote` keeps the fact (append-only). `add` is idempotent per (text, scope) and re-checks after the embed await, so concurrent identical adds don't create duplicates; resurrecting a re-added fact clears only its **tombstoned** rows, so it can't clobber a live note raced in concurrently. An **add-time near-duplicate guard** then skips the write if the nearest active note in the same scope scores ≥ `duplicateThreshold` (default 0.92) — bounding growth at the source; disable with `dedupeOnWrite: false` (the idle dream still reconciles against canonical memory).
 - `prefetch(query)` → embed the user message (`query` side), cosine-search the store, inject the top matches as a `<provider-memory>` block.
 - `search` / `forget` → the `provider_memory` tool.
 - **Scoped**: notes are tagged `global` or `project:<id>`; a query only sees `global` + the **current** project — no cross-project bleed.
@@ -169,9 +169,12 @@ Restart opencode. The log (`opencode-hermes.log`) should show `provider=embeddin
 | `recencyWeight` | `0` | blend cosine with a recency term (0 = pure cosine) |
 | `recencyHalfLifeDays` | `30` | recency half-life, in days |
 | `canonicalWeight` | `0` | additive score boost for canonical notes |
-| `duplicateThreshold` | `0.92` | dream: cosine ≥ this collapses a near-duplicate |
+| `duplicateThreshold` | `0.92` | cosine ≥ this is a duplicate (dream collapse + add-time guard) |
 | `ambiguousThreshold` | `0.8` | dream: cosine ≥ this consults the judge |
+| `dedupeOnWrite` | `true` | add-time: skip a note whose nearest same-scope note is ≥ `duplicateThreshold` |
 | `dbPath` | `<memoryRoot>/embeddings.sqlite` | vector store path |
+
+> **`duplicateThreshold` (0.92) — calibrated.** On the live nomic store, same-fact paraphrases scored **0.935–0.982** and the most-similar *distinct* notes scored **≤0.841** (hand-built hard negatives ≤0.789), so 0.92 sits in the gap with a deliberate high bias: a false merge silently loses a distinct fact, while a miss only leaves a duplicate (a later add or the idle dream may still collapse it).
 
 ## Verified (RTX 3090)
 
@@ -194,11 +197,10 @@ provider_memory search "when do we copy data off-site?"
 bun run test
 ```
 
-41 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, dims guard + mismatch warning, add/search, concurrent-add dedupe, tombstone-only cleanup, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
+46 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, dims guard + mismatch warning, add-time near-dup guard (skip/disable/mirror), add/search, concurrent-add dedupe, tombstone-only cleanup, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
 
 ## Roadmap
 
-- **Add-time near-duplicate guard** (next) — on `add`/mirror, a top-1 cosine check at/above `duplicateThreshold` skips or supersedes a near-duplicate, bounding growth at the source (O(N) per write, no idle pass). Complements the canonical dream.
 - **ANN index (`sqlite-vec`)** — *deferred, trigger-gated.* Brute-force streaming is ~3.5 µs/note at ~80 MB RSS, so an approximate index is only worth it once measured need appears: store **> ~50k notes** or search **p95 > ~50 ms**. Preferred route keeps vectors in SQLite via a loadable extension (adds a binary dependency and uses approximate recall), so it needs its own benchmark before adopting.
 - **Store-wide contradiction pass** — full note-vs-note supersession needs ANN candidate generation; not viable as an O(N²) JS pass at personal-store scale.
 

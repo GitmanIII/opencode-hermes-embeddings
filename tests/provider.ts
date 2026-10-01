@@ -167,7 +167,7 @@ assert("store file created", await fs.access(path.join(TMP, "embeddings.sqlite")
 let dreamN = 0;
 const mkProvider = async (opts: Record<string, unknown> = {}) => {
   const p = new EmbeddingsMemoryProvider(
-    { minScore: 0.01, topK: 5, dbPath: path.join(TMP, `dream-${++dreamN}.sqlite`), ...opts },
+    { minScore: 0.01, topK: 5, dedupeOnWrite: false, dbPath: path.join(TMP, `dream-${++dreamN}.sqlite`), ...opts },
     new FakeEmbedder(),
   );
   await p.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projDream" });
@@ -234,6 +234,47 @@ await gated.add("alpha beta gamma detector notes");
 assert("default minScore gates unrelated recall", (await gated.search("zzzz qqqq", 5)).length === 0);
 assert("default minScore still recalls a relevant note", (await gated.search("alpha beta detector", 5)).length >= 1);
 gated.shutdown();
+
+// add-time near-duplicate guard: a paraphrase of an existing note is not stored
+// (bounds growth at the source; the idle dream reconciles against canonical).
+// duplicateThreshold 0.8 makes the fake bag-of-words paraphrase (0.894) qualify.
+const guard = new EmbeddingsMemoryProvider(
+  { topK: 5, duplicateThreshold: 0.8, minScore: 0.01, dbPath: path.join(TMP, "guard.sqlite") },
+  new FakeEmbedder(),
+);
+await guard.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projGuard" });
+const g1 = await guard.add("alpha beta gamma detector notes");
+const g2 = await guard.add("alpha beta gamma detector"); // 0.894 >= 0.8
+assert("near-dup add returns the existing id", g2.id === g1.id, JSON.stringify({ g1, g2 }));
+assert(
+  "near-dup add stores no second note",
+  (await guard.search("alpha beta gamma detector", 20)).filter((h) => h.text.startsWith("alpha beta gamma detector")).length === 1,
+);
+assert("distinct add is inserted", (await guard.add("omega omega one two three four")).id !== g1.id);
+// the mirror path guards too (global scope)
+await guard.onMemoryWrite("add", "delta epsilon zeta global");
+await guard.onMemoryWrite("add", "delta epsilon zeta global fact"); // 0.894 >= 0.8
+const mHits = await guard.search("delta epsilon zeta global", 20);
+assert(
+  "mirror near-dup is skipped",
+  mHits.filter((h) => h.text.includes("global")).length === 1 && !mHits.some((h) => h.text.includes("fact")),
+  JSON.stringify(mHits.map((h) => h.text)),
+);
+guard.shutdown();
+
+// the guard can be turned off (always insert, subject to exact-text dedupe)
+const guardOff = new EmbeddingsMemoryProvider(
+  { topK: 5, duplicateThreshold: 0.8, dedupeOnWrite: false, minScore: 0.01, dbPath: path.join(TMP, "guard-off.sqlite") },
+  new FakeEmbedder(),
+);
+await guardOff.initialize({ memoryRoot: TMP, prefetchLimit: 5 });
+await guardOff.add("sigma tau upsilon first");
+await guardOff.add("sigma tau upsilon second");
+assert(
+  "guard disabled stores both near-dups",
+  (await guardOff.search("sigma tau upsilon", 20)).filter((h) => h.text.startsWith("sigma tau upsilon")).length === 2,
+);
+guardOff.shutdown();
 
 // Switching models gives the query a new dims; legacy notes are skipped by the
 // `dims` filter. That must warn once instead of silently returning empty recall.

@@ -69,6 +69,8 @@ export type EmbeddingsOptions = {
    * (vec0 is an exact SIMD KNN, not approximate).
    */
   ann?: "auto" | boolean;
+  /** Info sink for the one-line startup report (default `console.log`). */
+  log?: (msg: string) => void;
 };
 
 /** Dream reconciliation options (structurally matches opencode-hermes). */
@@ -110,6 +112,7 @@ export class EmbeddingsMemoryProvider {
   private ann: "auto" | boolean = "auto";
   private projectId: string | null = null;
   private warn: (msg: string) => void = console.warn;
+  private log: (msg: string) => void = console.log;
   /** Query dims already checked for legacy mismatches (warn at most once each). */
   private warnedDims = new Set<number>();
 
@@ -140,8 +143,9 @@ export class EmbeddingsMemoryProvider {
     this.dedupeOnWrite = o.dedupeOnWrite ?? true;
     this.ann = o.ann ?? "auto";
     this.projectId = ctx.projectId ?? null;
-    // `warn` may arrive via config JSON, where it can only be non-callable.
+    // `warn`/`log` may arrive via config JSON, where they can only be non-callable.
     this.warn = typeof o.warn === "function" ? o.warn : console.warn;
+    this.log = typeof o.log === "function" ? o.log : console.log;
     const dbPath = o.dbPath ?? path.join(ctx.memoryRoot, "embeddings.sqlite");
     this.store = new VectorStore(dbPath);
     // Optional sqlite-vec accelerator: exact (~3x faster, ~25% smaller). Falls
@@ -150,6 +154,8 @@ export class EmbeddingsMemoryProvider {
       const ok = await this.store.initAnn();
       if (!ok && this.ann === true) this.warn("embeddings: sqlite-vec not available; falling back to brute-force search.");
     }
+    // Observable startup report: which search index is active (was silent under "auto").
+    this.log(`embeddings: search index = ${this.store.ann ? "sqlite-vec (exact SIMD KNN)" : "brute force"}`);
   }
 
   /** Whether the sqlite-vec accelerated search path is active. */

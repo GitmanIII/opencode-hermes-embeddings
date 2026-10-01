@@ -117,6 +117,13 @@ await bruteProv.add("ann disabled alpha note");
 assert("brute-force provider still searches", (await bruteProv.search("ann disabled alpha note", 5)).some((h) => h.text === "ann disabled alpha note"));
 bruteProv.shutdown();
 
+// startup observability: the active search index is reported once
+const startupLog: string[] = [];
+const logProv = new EmbeddingsMemoryProvider({ topK: 5, minScore: 0.01, log: (m) => startupLog.push(m), dbPath: path.join(TMP, "ann-log.sqlite") }, new FakeEmbedder());
+await logProv.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projLog" });
+assert("startup reports the active search index", startupLog.some((m) => m.includes("search index =")), JSON.stringify(startupLog));
+logProv.shutdown();
+
 // Tombstone cleanup must never touch a live row (a concurrent process may have
 // inserted one for the same text during the embed await).
 const tstore = new VectorStore(path.join(TMP, "tombstone-delete.sqlite"));

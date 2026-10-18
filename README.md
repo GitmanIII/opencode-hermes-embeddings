@@ -12,7 +12,7 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 ## How it works
 
 - `add` / `onMemoryWrite` → embed the note (`document` side) and store the vector. Built-in writes are mirrored: `replace` deletes the superseded text and stores the new one, `remove` propagates the deletion, and `demote` keeps the fact (append-only). `add` is idempotent per (text, scope) and re-checks after the embed await, so concurrent identical adds don't create duplicates; resurrecting a re-added fact clears only its **tombstoned** rows, so it can't clobber a live note raced in concurrently. An **add-time near-duplicate guard** then skips the write if the nearest active note in the same scope scores ≥ `duplicateThreshold` (default 0.92) — bounding growth at the source; disable with `dedupeOnWrite: false` (the idle dream still reconciles against canonical memory).
-- `prefetch(query)` → embed the user message (`query` side), cosine-search the store, inject the top matches as a `<provider-memory>` block.
+- `prefetch(query)` → embed the user message (`query` side), cosine-search the store, inject the top matches as a `<provider-memory>` block. **Canonical notes are skipped**: they mirror `MEMORY.md`/`USER.md`, which the host already injects whole every turn, so recalling them again only spends tokens (set `prefetchIncludeCanonical: true` to include them). Each note is injected up to `prefetchCharsPerNote` chars.
 - `search` / `forget` → the `provider_memory` tool.
 - **Scoped**: notes are tagged `global` or `project:<id>`; a query only sees `global` + the **current** project — no cross-project bleed.
 - `reconcile(canonical)` — the **dream** invoked on idle by opencode-hermes: notes made obsolete by a current canonical fact are **superseded** (tombstoned, excluded from recall); near-duplicates (`cosine ≥ duplicateThreshold`) are collapsed, and an optional `judge` resolves an ambiguous band. opencode-hermes passes `hardDelete`, so each dream GCs its tombstones (the store stays bounded). All new canonical facts are embedded in **one batched request** (was one per fact), and canonical facts are deduped across `MEMORY.md`/`USER.md`.
@@ -166,6 +166,7 @@ Restart opencode. The log (`opencode-hermes.log`) should show `provider=embeddin
 | `prefixes` | `true` | apply doc/query retrieval prefixes |
 | `docPrefix` / `queryPrefix` | nomic | override prefixes |
 | `topK` | `5` | notes injected per turn / max search results |
+| `prefetchCharsPerNote` | `400` | chars injected per recalled note; longer notes are **truncated in recall** (0 = no truncation). Notes past it also warn at add time |
 | `minScore` | `0.58` | minimum cosine to inject; **model-specific** (default matches nomic's full gate; 0 = off) |
 | `recencyWeight` | `0` | blend cosine with a recency term (0 = pure cosine) |
 | `recencyHalfLifeDays` | `30` | recency half-life, in days |
@@ -173,6 +174,7 @@ Restart opencode. The log (`opencode-hermes.log`) should show `provider=embeddin
 | `duplicateThreshold` | `0.92` | cosine ≥ this is a duplicate (dream collapse + add-time guard) |
 | `ambiguousThreshold` | `0.8` | dream: cosine ≥ this consults the judge |
 | `dedupeOnWrite` | `true` | add-time: skip a note whose nearest same-scope note is ≥ `duplicateThreshold` |
+| `prefetchIncludeCanonical` | `false` | include canonical notes (mirrors of `MEMORY.md`/`USER.md`) in prefetch — they are already in the system prompt |
 | `accelerate` | `"auto"` | sqlite-vec accelerated search (exact KNN, not approximate): `"auto"` (use when installed) / `true` (warn if unavailable) / `false` (force brute force) |
 | `log` / `warn` | `console.log` / `console.warn` | diagnostic sinks (**functions** — not settable in JSON). Precedence: an explicit option, then the host's `initialize()` **context** sink, then the console. `opencode-hermes` passes the context sinks, so provider lines land in `opencode-hermes.log`. |
 | `dbPath` | `<memoryRoot>/embeddings.sqlite` | vector store path |
@@ -186,7 +188,8 @@ End-to-end, with opencode-hermes wired to this provider and TEI running on the G
 - **Explicit semantic search** — `provider_memory search "colour preference"` returned *"My favourite test colour is aubergine-42"* at **score 0.76**.
 - **Cross-session semantic recall** — in a *new* session, asking *"when do we copy data off-site?"* surfaced *"The nightly backup archives snapshots to cold storage at 03:00."* (no keyword overlap).
 - **Latency** — TEI `openai_embed` on GPU: **~1.7 ms** for a short note (p50 over 50 runs), **~4–18 ms** for longer prompts; 768-dim vectors; **~0.6 GB VRAM**.
-- **Scoping** — a note added in a project is visible only in that project (+ `global`); verified by the isolation tests.
+- **Scoping** — a note added in a project is visible only in that project (+ `global`); verified by the isolation tests. A **legacy `project:global` scope** (an early host project id of `global`) matched *no* query scope, so those notes were silently unreachable; `initialize()` moves them to `global` and rebuilds the index (the vec index partitions by scope, so a bare `UPDATE` would leave it stale).
+- **Long notes** — one mean-pooled vector per note, and only `prefetchCharsPerNote` (400) chars are injected, so past the slice a note's tail can never be recalled. Measured on nomic for a fact stated at the top of a note: **0.69** at 1200 chars, **0.65** at 2000, **0.58** at 5000 — so keep notes short; the add path warns once past the slice.
 
 Try it:
 ```
@@ -200,7 +203,7 @@ provider_memory search "when do we copy data off-site?"
 bun run test
 ```
 
-59 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, dims guard + mismatch warning, **sqlite-vec parity vs brute force + incremental sync (supersede/restore/delete/rebuild) + `accelerate:false` fallback + startup index report (option and context sinks)**, add-time near-dup guard (skip/disable/mirror), add/search, concurrent-add dedupe, tombstone-only cleanup, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
+72 hermetic checks using an injectable fake embedder (no TEI needed): cosine, recency ranking, dims guard + mismatch warning, **sqlite-vec parity vs brute force + incremental sync (supersede/restore/delete/rebuild) + `accelerate:false` fallback + startup index report (option and context sinks) + scope repair with index rebuild**, add-time near-dup guard (skip/disable/mirror), **prefetch hygiene (canonical skipped by default, configurable per-note slice, long-note warning)**, add/search, concurrent-add dedupe, tombstone-only cleanup, prefetch block, project isolation, global mirroring + dedupe (before the top-K cut), replace/remove/demote propagation, dream reconcile (near-dup collapse, judge band, canonical, GC, tombstone resurrection, batched multi-fact pass), volume search, forget.
 
 ## Roadmap
 

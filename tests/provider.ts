@@ -365,6 +365,88 @@ assert("mismatched-dims notes are not recalled", (await pw.search("legacy note f
 assert("matching-dims notes still recalled", (await pw.search("current model note", 5)).some((h) => h.text === "current model note"));
 pw.shutdown();
 
+// ─── v0.9.4: prefetch hygiene, legacy-scope repair, long notes ───
+
+// Prefetch skips canonical mirrors: they are already injected whole by the host
+// every turn, so recalling them again only spends tokens. The search tool still
+// returns them (an explicit query should see everything).
+const pcanon = new EmbeddingsMemoryProvider({ minScore: 0.01, topK: 5, dbPath: path.join(TMP, "canon.sqlite") }, new FakeEmbedder());
+await pcanon.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projCanon" });
+await pcanon.onMemoryWrite("add", "canonical mirror fact about turquoise widgets");
+await pcanon.reconcile(["canonical mirror fact about turquoise widgets"]);
+await pcanon.add("ordinary note about indigo gizmos");
+assert("search still returns canonical mirrors", (await pcanon.search("canonical mirror fact turquoise widgets", 5)).some((h) => h.text.includes("turquoise widgets")));
+assert("prefetch excludes canonical mirrors", !(await pcanon.prefetch("canonical mirror fact turquoise widgets")).text.includes("turquoise widgets"));
+assert("prefetch still includes ordinary notes", (await pcanon.prefetch("ordinary indigo gizmos")).text.includes("indigo gizmos"));
+pcanon.shutdown();
+
+const pcanon2 = new EmbeddingsMemoryProvider({ minScore: 0.01, topK: 5, prefetchIncludeCanonical: true, dbPath: path.join(TMP, "canon.sqlite") }, new FakeEmbedder());
+await pcanon2.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projCanon" });
+assert("prefetchIncludeCanonical restores them", (await pcanon2.prefetch("canonical mirror fact turquoise widgets")).text.includes("turquoise widgets"));
+pcanon2.shutdown();
+
+// A note stranded under the legacy `project:global` scope is not matched by any
+// query scope, so it was silently unreachable. initialize() moves it to `global`
+// — including through the vec index, which partitions by scope.
+const dbOf = (x: unknown) => (x as { store: { db: any } }).store.db;
+const fake = new FakeEmbedder();
+const legacyDb = path.join(TMP, "legacy.sqlite");
+const legacySeedStore = new VectorStore(legacyDb);
+await legacySeedStore.initVecIndex();
+const [lv] = await fake.embed(["legacy stranded note about vermilion pumps"], "document");
+legacySeedStore.add("legacy1", "legacy stranded note about vermilion pumps", lv, "project:global");
+legacySeedStore.close();
+
+const legacyWarn: string[] = [];
+const plegacy = new EmbeddingsMemoryProvider({ minScore: 0.01, warn: (m) => legacyWarn.push(m), dbPath: legacyDb }, fake);
+await plegacy.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projLegacy" });
+assert("legacy project:global notes become reachable", (await plegacy.search("legacy stranded note vermilion pumps", 5)).some((h) => h.text.includes("vermilion pumps")), JSON.stringify(legacyWarn));
+assert("the scope repair reports what it moved", legacyWarn.some((m) => m.includes("moved 1 note") && m.includes("project:global")), JSON.stringify(legacyWarn));
+assert("the moved note's scope is now global", dbOf(plegacy).query("select scope from memo where id = ?").get("legacy1").scope === "global");
+assert(
+  "the derived index was rebuilt onto the new scope",
+  dbOf(plegacy).query(`select count(*) c from vec_${DIMS} where scope = 'global'`).get().c === 1,
+  "a stale vec partition would only be masked by the brute-force fallback",
+);
+
+// A project id of "global" must not create the unreachable `project:global` scope.
+await plegacy.setProject?.("global");
+await plegacy.add("note added while the project id is global");
+assert(
+  "project id 'global' normalizes to the global scope",
+  dbOf(plegacy).query("select scope from memo where text = ?").get("note added while the project id is global").scope === "global",
+);
+plegacy.shutdown();
+
+// The repair is one-way and idempotent: a second initialize finds nothing to move.
+const legacyWarn2: string[] = [];
+const plegacy2 = new EmbeddingsMemoryProvider({ minScore: 0.01, warn: (m) => legacyWarn2.push(m), dbPath: legacyDb }, fake);
+await plegacy2.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projLegacy" });
+assert(
+  "the scope repair is idempotent",
+  legacyWarn2.every((m) => !m.includes("moved")) && (await plegacy2.search("legacy stranded note vermilion pumps", 5)).length > 0,
+  JSON.stringify(legacyWarn2),
+);
+plegacy2.shutdown();
+
+// Long notes: the injected slice is configurable, and an add past it warns once
+// (past the slice the tail can never be recalled, whatever the embedding says).
+const capWarn: string[] = [];
+const pcap = new EmbeddingsMemoryProvider({ minScore: 0.01, topK: 5, prefetchCharsPerNote: 40, warn: (m) => capWarn.push(m), dbPath: path.join(TMP, "cap.sqlite") }, fake);
+await pcap.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projCap" });
+const longNote = "kappa long note about lavender turbines " + "padding ".repeat(30);
+await pcap.add(longNote);
+const capd = await pcap.prefetch("kappa long note lavender turbines");
+assert(
+  "prefetch truncates each note at prefetchCharsPerNote",
+  capd.text.includes("kappa long note about lavender turbines") && capd.text.length < longNote.length,
+  `block=${capd.text.length} note=${longNote.length}`,
+);
+assert("add warns about a note longer than the injected slice", capWarn.some((m) => m.includes("tail can never be recalled")), JSON.stringify(capWarn));
+await pcap.add("theta long note about amber flywheels " + "padding ".repeat(30));
+assert("the long-note warning is emitted once per process", capWarn.filter((m) => m.includes("tail can never be recalled")).length === 1, JSON.stringify(capWarn));
+pcap.shutdown();
+
 provider.shutdown();
 await fs.rm(TMP, { recursive: true, force: true });
 console.log(`\n${passed} passed, ${failed} failed`);

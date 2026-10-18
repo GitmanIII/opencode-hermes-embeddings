@@ -55,6 +55,21 @@ export type EmbeddingsOptions = {
   recencyHalfLifeDays?: number;
   /** Additive score boost for notes mirroring a current canonical fact. */
   canonicalWeight?: number;
+  /**
+   * Characters of each recalled note injected into the prompt (default 400);
+   * longer notes are truncated in recall, so their tail can never be surfaced.
+   * 0 disables truncation. At the default, truncation binds long before the
+   * embedding dilutes: measured on nomic, a query for a fact stated at the top of
+   * a note still scores 0.69 (1200 chars), 0.65 (2000) and 0.58 (5000) against the
+   * 0.58 gate. Notes longer than this also warn at add time.
+   */
+  prefetchCharsPerNote?: number;
+  /**
+   * Include canonical notes (mirrors of MEMORY.md/USER.md) in prefetch. Default
+   * `false`: they are already injected whole by the host every turn, so recalling
+   * them again only spends tokens. The `provider_memory` search tool is unaffected.
+   */
+  prefetchIncludeCanonical?: boolean;
   /** Cosine at/above which a note is a duplicate (dream reconcile; default 0.92). */
   duplicateThreshold?: number;
   /** Cosine at/above which the dream judge is consulted (default 0.8). */
@@ -100,6 +115,14 @@ const GLOBAL_SCOPE = "global";
  * (see README); 0 disables the gate.
  */
 const DEFAULT_MIN_SCORE = 0.58;
+const DEFAULT_PREFETCH_CHARS_PER_NOTE = 400;
+/**
+ * A legacy project id used by the host for the home/global directory. Notes were
+ * then stored under `project:global`, which no query scope matches (queries see
+ * `global` + the current project), so they were silently unreachable. It is
+ * normalized to the global scope, and existing rows are moved on initialize().
+ */
+const LEGACY_PROJECT_GLOBAL = "global";
 
 export class EmbeddingsMemoryProvider {
   readonly name = "embeddings";
@@ -113,12 +136,16 @@ export class EmbeddingsMemoryProvider {
   private duplicateThreshold = 0.92;
   private ambiguousThreshold = 0.8;
   private dedupeOnWrite = true;
+  private prefetchCharsPerNote = DEFAULT_PREFETCH_CHARS_PER_NOTE;
+  private prefetchIncludeCanonical = false;
   private accelerate: "auto" | boolean = "auto";
   private projectId: string | null = null;
   private warn: (msg: string) => void = console.warn;
   private log: (msg: string) => void = console.log;
   /** Query dims already checked for legacy mismatches (warn at most once each). */
   private warnedDims = new Set<number>();
+  /** Long-note guidance is emitted at most once per process (log hygiene). */
+  private warnedLongNote = false;
 
   /** `embedder` is injectable for tests. */
   constructor(private opts: EmbeddingsOptions = {}, embedder?: Embedder) {
@@ -145,6 +172,8 @@ export class EmbeddingsMemoryProvider {
     this.duplicateThreshold = o.duplicateThreshold ?? 0.92;
     this.ambiguousThreshold = o.ambiguousThreshold ?? 0.8;
     this.dedupeOnWrite = o.dedupeOnWrite ?? true;
+    this.prefetchCharsPerNote = o.prefetchCharsPerNote ?? DEFAULT_PREFETCH_CHARS_PER_NOTE;
+    this.prefetchIncludeCanonical = o.prefetchIncludeCanonical ?? false;
     this.accelerate = o.accelerate ?? "auto";
     this.projectId = ctx.projectId ?? null;
     // `warn`/`log` preference: an explicit option (only possible in-process),
@@ -161,6 +190,15 @@ export class EmbeddingsMemoryProvider {
     if (this.accelerate !== false) {
       const ok = await this.store.initVecIndex();
       if (!ok && this.accelerate === true) this.warn("embeddings: sqlite-vec not available; falling back to brute-force search.");
+    }
+    // Repair notes stranded under a legacy project id: `project:global` is not in
+    // any query scope, so those notes could never be recalled. Runs after
+    // initVecIndex so the derived index is rebuilt with the new partition.
+    const moved = this.store.reassignScope(`project:${LEGACY_PROJECT_GLOBAL}`, GLOBAL_SCOPE);
+    if (moved) {
+      this.warn(
+        `embeddings: moved ${moved} note(s) from the legacy scope 'project:${LEGACY_PROJECT_GLOBAL}' to '${GLOBAL_SCOPE}' (they were previously unreachable).`,
+      );
     }
     // Observable startup report: which search index is active.
     this.log(`embeddings: search index = ${this.store?.acceleratedIndex ? "sqlite-vec (exact KNN, SIMD)" : "brute-force"}`);
@@ -181,7 +219,10 @@ export class EmbeddingsMemoryProvider {
   }
 
   private projectScope(): string {
-    return this.projectId ? `project:${this.projectId}` : GLOBAL_SCOPE;
+    // A project id of "global" (the host's home/global directory) must not become
+    // the unreachable scope `project:global`.
+    if (!this.projectId || this.projectId === LEGACY_PROJECT_GLOBAL) return GLOBAL_SCOPE;
+    return `project:${this.projectId}`;
   }
 
   /** Visible scopes for a query: global + current project (never other projects). */
@@ -207,6 +248,7 @@ export class EmbeddingsMemoryProvider {
   async add(content: string, tags?: string[]): Promise<{ id: string }> {
     const text = content.trim();
     if (!text) throw new Error("add requires content");
+    this.noteLengthGuard(text);
     const scope = tags?.includes("global") ? GLOBAL_SCOPE : this.projectScope();
     const existing = this.store.findByText(text, scope);
     if (existing) return { id: existing }; // idempotent
@@ -230,6 +272,11 @@ export class EmbeddingsMemoryProvider {
   }
 
   async search(query: string, limit?: number): Promise<ProviderHit[]> {
+    return this.runSearch(query, limit ?? this.topK, {});
+  }
+
+  /** Shared search; `extra` carries per-caller store options (e.g. prefetch). */
+  private async runSearch(query: string, limit: number, extra: SearchOptions): Promise<ProviderHit[]> {
     if (!query.trim()) return [];
     const [qv] = await this.embedder.embed([query], "query");
     // The `dims` filter silently drops notes embedded by a different model, so
@@ -244,20 +291,36 @@ export class EmbeddingsMemoryProvider {
         );
       }
     }
-    const opts: SearchOptions = { dedupeByText: true };
+    const opts: SearchOptions = { dedupeByText: true, ...extra };
     if (this.recencyWeight > 0) {
       opts.recencyWeight = this.recencyWeight;
       opts.halfLifeMs = this.recencyHalfLifeDays * 86_400_000;
     }
     if (this.canonicalWeight > 0) opts.canonicalBoost = this.canonicalWeight;
-    return this.store.search(qv, this.queryScopes(), limit ?? this.topK, this.minScore, opts);
+    return this.store.search(qv, this.queryScopes(), limit, this.minScore, opts);
   }
 
   async prefetch(query: string): Promise<{ text: string; hits: number }> {
-    const hits = await this.search(query, this.topK);
+    // Canonical notes mirror the host's always-injected MEMORY/USER files, so
+    // recalling them again only spends tokens (see prefetchIncludeCanonical).
+    const hits = await this.runSearch(query, this.topK, { excludeCanonical: !this.prefetchIncludeCanonical });
     if (!hits.length) return { text: "", hits: 0 };
-    const body = hits.map((h) => `• ${h.text.slice(0, 400)}`).join("\n");
+    const cap = this.prefetchCharsPerNote;
+    const body = hits.map((h) => `• ${cap > 0 ? h.text.slice(0, cap) : h.text}`).join("\n");
     return { text: `<provider-memory source="embeddings">\nRelevant notes from past sessions:\n${body}\n</provider-memory>`, hits: hits.length };
+  }
+
+  /**
+   * One-time guidance: a note longer than the injected slice is silently
+   * truncated in recall, so its tail can never be surfaced.
+   */
+  private noteLengthGuard(text: string): void {
+    if (this.warnedLongNote || this.prefetchCharsPerNote <= 0 || text.length <= this.prefetchCharsPerNote) return;
+    this.warnedLongNote = true;
+    this.warn(
+      `embeddings: note is ${text.length} chars but prefetch injects only the first ${this.prefetchCharsPerNote}, so its tail can never be recalled. ` +
+        `Prefer shorter notes; raising prefetchCharsPerNote works up to ~2k chars (past that a single mean-pooled vector dilutes and recall drops off).`,
+    );
   }
 
   forget(id: string): boolean {
@@ -283,6 +346,7 @@ export class EmbeddingsMemoryProvider {
     }
     const text = content.trim();
     if (!text) return;
+    this.noteLengthGuard(text);
     if (this.store.findByText(text, GLOBAL_SCOPE)) return;
     this.store.deleteTombstonesByText(text, GLOBAL_SCOPE); // drop dream tombstones, if any
     const [vector] = await this.embedder.embed([text], "document");

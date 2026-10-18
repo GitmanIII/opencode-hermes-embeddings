@@ -38,6 +38,12 @@ export type SearchOptions = {
   includeSuperseded?: boolean;
   /** Keep only the best-scoring note per exact text (before the `limit` cut). */
   dedupeByText?: boolean;
+  /**
+   * Exclude canonical notes (mirrors of the host's always-injected MEMORY/USER
+   * files). Prefetch sets this: those facts are already in the system prompt, so
+   * recalling them again only spends tokens.
+   */
+  excludeCanonical?: boolean;
 };
 
 /** Rows loaded from `memo` for scoring. */
@@ -270,6 +276,9 @@ export class VectorStore {
     const scored: ScoredNote[] = [];
     for (const r of rows) {
       if (r.superseded_by !== null) continue;
+      // Canonical notes are filtered after the KNN cut (vec0 has no such column);
+      // `k` is sized well above `limit`, so the pool still has non-canonical rows.
+      if (opts?.excludeCanonical && r.canonical) continue;
       const score = 1 - (dist.get(r.id) ?? 1); // vec0 cosine distance = 1 - cosine
       if (score >= minScore) scored.push({ ...r, score });
     }
@@ -291,7 +300,7 @@ export class VectorStore {
     // `dims = ?` skips vectors from a different model/quantization. Comparing a
     // query against a mismatched vector would otherwise produce meaningless
     // scores (the dot product just runs over the shorter length).
-    const filter = `${opts?.includeSuperseded ? "" : " AND superseded_by IS NULL"} AND dims = ?`;
+    const filter = `${opts?.includeSuperseded ? "" : " AND superseded_by IS NULL"}${opts?.excludeCanonical ? " AND canonical = 0" : ""} AND dims = ?`;
     const stmt = this.db.query(
       `SELECT id, text, scope, created_at, superseded_by, canonical, vector FROM memo WHERE ${where}${filter}`,
     );
@@ -413,6 +422,20 @@ export class VectorStore {
       ? this.db.run(`UPDATE memo SET canonical = 0 WHERE scope = ? AND canonical <> 0`, [scope])
       : this.db.run(`UPDATE memo SET canonical = 0 WHERE canonical <> 0`);
     return res.changes;
+  }
+
+  /**
+   * Move every row from one scope to another and return the count. Used to repair
+   * notes stranded under a legacy project id (which no query scope matches, so
+   * they are silently unreachable). The `vec_<dims>` index partitions by scope,
+   * so a plain UPDATE would leave the index pointing at the old partition —
+   * hence the rebuild.
+   */
+  reassignScope(from: string, to: string): number {
+    if (from === to) return 0;
+    const { changes } = this.db.run(`UPDATE memo SET scope = ? WHERE scope = ?`, [to, from]);
+    if (changes && this.vecEnabled) this.rebuildVecIndex();
+    return changes;
   }
 
   /** Hard-delete tombstoned notes (GC); returns rows removed. */

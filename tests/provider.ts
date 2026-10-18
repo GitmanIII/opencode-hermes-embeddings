@@ -124,6 +124,21 @@ await logProv.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projLo
 assert("startup reports the active search index", startupLog.some((m) => m.includes("search index =")), JSON.stringify(startupLog));
 logProv.shutdown();
 
+// Production sink: config JSON can't carry a function, so opencode-hermes passes
+// the log on the initialize() context — that is what must make the report visible.
+const ctxLog: string[] = [];
+const ctxProv = new EmbeddingsMemoryProvider({ topK: 5, minScore: 0.01, accelerate: false, dbPath: path.join(TMP, "ctx-log.sqlite") }, new FakeEmbedder());
+await ctxProv.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projCtx", log: (m) => ctxLog.push(m) });
+assert("context log sink receives the startup report", ctxLog.some((m) => m.includes("search index =")), JSON.stringify(ctxLog));
+ctxProv.shutdown();
+
+// An explicit option still wins over the context sink.
+const optLog: string[] = [];
+const optProv = new EmbeddingsMemoryProvider({ topK: 5, minScore: 0.01, accelerate: false, log: (m) => optLog.push(m), dbPath: path.join(TMP, "opt-log.sqlite") }, new FakeEmbedder());
+await optProv.initialize({ memoryRoot: TMP, prefetchLimit: 5, projectId: "projOpt", log: () => { throw new Error("context log must not be used when options.log is set"); } });
+assert("options.log takes precedence over the context sink", optLog.some((m) => m.includes("search index =")), JSON.stringify(optLog));
+optProv.shutdown();
+
 // Tombstone cleanup must never touch a live row (a concurrent process may have
 // inserted one for the same text during the embed await).
 const tstore = new VectorStore(path.join(TMP, "tombstone-delete.sqlite"));

@@ -20,6 +20,10 @@ export type ProviderContext = {
   prefetchLimit?: number;
   options?: Record<string, unknown>;
   projectId?: string;
+  /** Host log sink (used when `options.log` is absent — config JSON can't carry functions). */
+  log?: (msg: string) => void;
+  /** Host warn sink (used when `options.warn` is absent — config JSON can't carry functions). */
+  warn?: (msg: string) => void;
 };
 
 export type EmbeddingsOptions = {
@@ -143,9 +147,12 @@ export class EmbeddingsMemoryProvider {
     this.dedupeOnWrite = o.dedupeOnWrite ?? true;
     this.accelerate = o.accelerate ?? "auto";
     this.projectId = ctx.projectId ?? null;
-    // `warn`/`log` may arrive via config JSON, where they can only be non-callable.
-    this.warn = typeof o.warn === "function" ? o.warn : console.warn;
-    this.log = typeof o.log === "function" ? o.log : console.log;
+    // `warn`/`log` preference: an explicit option (only possible in-process),
+    // then the host's context sink, then the console. Config JSON can't carry
+    // functions, so the context sink is what actually makes the startup report
+    // and dims warnings visible under opencode-hermes.
+    this.warn = typeof o.warn === "function" ? o.warn : typeof ctx.warn === "function" ? ctx.warn : console.warn;
+    this.log = typeof o.log === "function" ? o.log : typeof ctx.log === "function" ? ctx.log : console.log;
     const dbPath = o.dbPath ?? path.join(ctx.memoryRoot, "embeddings.sqlite");
     this.store = new VectorStore(dbPath);
     // Optional sqlite-vec accelerator: exact KNN, SIMD (~3x faster, ~25%

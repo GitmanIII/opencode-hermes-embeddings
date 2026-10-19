@@ -25,7 +25,7 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 - Bun (opencode-hermes runtime).
 - **Optional:** `sqlite-vec` — ships as an optional dependency (prebuilt binaries for linux/darwin/windows x64+arm64). It powers the accelerated search index (exact KNN); without it (unsupported platform, or `accelerate: false`) the provider uses brute force with identical results.
 
-**Versioning:** this repo and opencode-hermes are versioned **independently** (since opencode-hermes v0.10.0). Match features, not numbers; the pair tested together for this release is **opencode-hermes v0.10.4 + opencode-hermes-embeddings v0.9.4**.
+**Versioning:** this repo and opencode-hermes share **one version number**. They are a pair — the host and its optional provider — so a release of either bumps both, and the same number always means a tested pair. The current pair is **opencode-hermes v0.10.4 + opencode-hermes-embeddings v0.10.4**.
 
 ## 1. Run TEI (GPU, Docker)
 

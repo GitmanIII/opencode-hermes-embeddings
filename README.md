@@ -20,10 +20,12 @@ Unlike the usual CPU-only local-ONNX or cloud-API setups, embeddings here run **
 
 ## Requirements
 
-- [opencode-hermes](https://github.com/GitmanIII/opencode-hermes) **>= v0.5.0** (external provider loading + `providerOptions`/`projectId`); the **dream** (`reconcile`) needs **>= v0.7.0**.
+- [opencode-hermes](https://github.com/GitmanIII/opencode-hermes) **>= v0.5.0** (external provider loading + `providerOptions`/`projectId`); the **dream** (`reconcile`) needs **>= v0.7.0**; provider diagnostics in `opencode-hermes.log` (host `log`/`warn` sinks) need **>= v0.10.3** — older cores fall back to `console`.
 - A running **TEI** server with a CUDA GPU.
 - Bun (opencode-hermes runtime).
 - **Optional:** `sqlite-vec` — ships as an optional dependency (prebuilt binaries for linux/darwin/windows x64+arm64). It powers the accelerated search index (exact KNN); without it (unsupported platform, or `accelerate: false`) the provider uses brute force with identical results.
+
+**Versioning:** this repo and opencode-hermes are versioned **independently** (since opencode-hermes v0.10.0). Match features, not numbers; the pair tested together for this release is **opencode-hermes v0.10.4 + opencode-hermes-embeddings v0.9.4**.
 
 ## 1. Run TEI (GPU, Docker)
 
